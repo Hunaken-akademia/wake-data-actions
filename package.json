@@ -1,0 +1,8 @@
+{
+  "name": "wake-data-actions",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}
