@@ -1,0 +1,59 @@
+name: backfill-race-odds
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "開始日 YYYY-MM-DD（空なら自動で続きから）"
+        required: false
+      end_date:
+        description: "終了日 YYYY-MM-DD（最大60日）"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backfill-race-odds
+  cancel-in-progress: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve date range
+        id: dates
+        env:
+          INPUT_START: ${{ inputs.start_date }}
+          INPUT_END: ${{ inputs.end_date }}
+        run: |
+          START="$INPUT_START"
+          END="$INPUT_END"
+          if [ -z "$START" ]; then
+            echo "automatic=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$END" ]; then
+            END="$START"
+          fi
+          echo "start=$START" >> "$GITHUB_OUTPUT"
+          echo "end=$END" >> "$GITHUB_OUTPUT"
+
+      - name: Backfill trifecta odds
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
+          PUBLIC_APP_URL: https://newhunaken456.vercel.app
+        run: |
+          if [ "${{ steps.dates.outputs.automatic }}" = "true" ]; then
+            node pipeline/backfill_race_odds.mjs
+          else
+            node pipeline/backfill_race_odds.mjs "${{ steps.dates.outputs.start }}" "${{ steps.dates.outputs.end }}"
+          fi
