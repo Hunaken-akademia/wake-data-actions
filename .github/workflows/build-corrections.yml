@@ -4,32 +4,34 @@ on:
   workflow_dispatch:
     inputs:
       days:
-        description: '補正に使う日数'
+        description: "補正に使う日数"
         required: true
-        default: '180'
+        default: "180"
       wind_k:
-        description: '風補正の縮小推定K'
+        description: "風補正の縮小推定K"
         required: true
-        default: '20'
+        default: "20"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-corrections
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-
-      - name: Build correction tables
+          node-version: "22"
+      - name: Refresh server-side correction tables
         working-directory: pipeline
         run: |
           DAYS="${{ github.event.inputs.days || '180' }}"
