@@ -3,14 +3,17 @@ name: Refresh WAKE LAB exhibition cache
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: refresh-wake-lab-exhibition-cache
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
