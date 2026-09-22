@@ -1,6 +1,8 @@
 name: build-corrections
 
 on:
+  schedule:
+    - cron: "0 23 * * *" # JST 08:00
   workflow_dispatch:
     inputs:
       days:
@@ -21,7 +23,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
