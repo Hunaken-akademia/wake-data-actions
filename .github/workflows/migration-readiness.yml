@@ -1,0 +1,33 @@
+name: migration-readiness
+
+on:
+  push:
+    paths:
+      - ".github/workflows/migration-readiness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
+    steps:
+      - name: Verify required secrets are configured
+        shell: bash
+        run: |
+          missing=0
+          for name in SUPABASE_URL SUPABASE_SERVICE_KEY CAPTURE_TOKEN; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret: $name"
+              missing=1
+            else
+              echo "$name: configured"
+            fi
+          done
+          exit "$missing"
