@@ -36,6 +36,10 @@ jobs:
       - name: Verify Supabase credentials
         shell: bash
         run: |
+          if [[ "$SUPABASE_URL" != https://*.supabase.co ]]; then
+            echo "::error::SUPABASE_URL must be the full https://<project-ref>.supabase.co URL"
+            exit 1
+          fi
           code="$(curl -sS -o /tmp/supabase.json -w "%{http_code}"             "$SUPABASE_URL/rest/v1/races?select=race_date&limit=1"             -H "apikey: $SUPABASE_SERVICE_KEY"             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")"
           if [ "$code" != "200" ]; then
             echo "::error::Supabase credential check failed (HTTP $code)"
@@ -44,6 +48,7 @@ jobs:
           echo "Supabase authentication: OK"
 
       - name: Verify CAPTURE_TOKEN against WAKE production
+        if: always()
         shell: bash
         run: |
           date="$(TZ=Asia/Tokyo date +%Y-%m-%d)"
