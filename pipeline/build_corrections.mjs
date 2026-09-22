@@ -7,7 +7,7 @@
 //   SUPABASE_URL, SUPABASE_SERVICE_KEY
 // ============================================================
 
-const SUPA = process.env.SUPABASE_URL;
+const SUPA = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const KEY = process.env.SUPABASE_SERVICE_KEY;
 
 if (!SUPA || !KEY) {
