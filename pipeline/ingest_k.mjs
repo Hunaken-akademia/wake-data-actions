@@ -431,6 +431,40 @@ function dedupeByKey(items, keyFn, label) {
   return [...map.values()];
 }
 
+function isStatementTimeout(text) {
+  return String(text || "").includes('"code":"57014"') || String(text || "").includes("statement timeout");
+}
+
+// race_resultsは1レース6行・インデックスも多く、500行1バッチだと
+// PostgREST接続既定のstatement_timeout(8s)を超えて失敗することがある
+// (2026-08-27分のingestで発生)。timeout時はそのバッチだけ半分に割って
+// 再試行し、それでも超えるほど巨大な取り込みでも取りこぼさないようにする。
+async function upsertBatch(SUPA, KEY, table, conflictCols, batch, depth = 0) {
+  const res = await fetchWithTimeout(`${SUPA}/rest/v1/${table}?on_conflict=${conflictCols}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: KEY,
+      Authorization: `Bearer ${KEY}`,
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(batch),
+  }, 30000);
+
+  if (res.ok) return;
+
+  const text = await res.text();
+  if (isStatementTimeout(text) && batch.length > 1 && depth < 6) {
+    const mid = Math.ceil(batch.length / 2);
+    console.warn(`  ${table} statement timeoutのため${batch.length}行を分割して再試行 (${mid}+${batch.length - mid})`);
+    await upsertBatch(SUPA, KEY, table, conflictCols, batch.slice(0, mid), depth + 1);
+    await upsertBatch(SUPA, KEY, table, conflictCols, batch.slice(mid), depth + 1);
+    return;
+  }
+
+  throw new Error(`${table} 投入失敗 ${res.status}: ${text}`);
+}
+
 async function upsertTable(table, rows, conflictCols) {
   const SUPA = process.env.SUPABASE_URL;
   const KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -439,26 +473,11 @@ async function upsertTable(table, rows, conflictCols) {
     throw new Error("SUPABASE_URL / SUPABASE_SERVICE_KEY が未設定です");
   }
 
-  const chunk = 500;
+  const chunk = 150;
 
   for (let i = 0; i < rows.length; i += chunk) {
     const batch = rows.slice(i, i + chunk);
-
-    const res = await fetchWithTimeout(`${SUPA}/rest/v1/${table}?on_conflict=${conflictCols}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: KEY,
-        Authorization: `Bearer ${KEY}`,
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify(batch),
-    }, 30000);
-
-    if (!res.ok) {
-      throw new Error(`${table} 投入失敗 ${res.status}: ${await res.text()}`);
-    }
-
+    await upsertBatch(SUPA, KEY, table, conflictCols, batch);
     console.log(`  ${table} upsert ${i + batch.length}/${rows.length}`);
   }
 }
