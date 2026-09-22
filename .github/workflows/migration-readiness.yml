@@ -38,8 +38,9 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ "$SUPABASE_URL" != "$EXPECTED_SUPABASE_URL" ]; then
-            echo "::error::SUPABASE_URL is not the full production project URL"
+          normalized="${SUPABASE_URL%/}"
+          if [ "$normalized" != "$EXPECTED_SUPABASE_URL" ]; then
+            echo "::error::SUPABASE_URL does not point to the WAKE production Supabase project"
             exit 1
           fi
           echo "SUPABASE_URL: OK"
