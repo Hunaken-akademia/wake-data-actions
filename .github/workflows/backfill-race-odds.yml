@@ -1,6 +1,8 @@
 name: backfill-race-odds
 
 on:
+  schedule:
+    - cron: "30 22 * * *" # JST 07:30
   workflow_dispatch:
     inputs:
       start_date:
@@ -44,6 +46,18 @@ jobs:
           fi
           echo "start=$START" >> "$GITHUB_OUTPUT"
           echo "end=$END" >> "$GITHUB_OUTPUT"
+
+      - name: Capture latest settled day odds
+        if: github.event_name == 'schedule'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
+          PUBLIC_APP_URL: https://newhunaken456.vercel.app
+        run: |
+          RECENT_DATE="$(TZ=Asia/Tokyo date -d 'yesterday' +%F)"
+          echo "recent settled odds: $RECENT_DATE"
+          node pipeline/backfill_race_odds.mjs "$RECENT_DATE" "$RECENT_DATE"
 
       - name: Backfill trifecta odds
         env:
