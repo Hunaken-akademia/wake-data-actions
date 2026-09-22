@@ -1,9 +1,6 @@
 name: migration-readiness
 
 on:
-  push:
-    paths:
-      - ".github/workflows/migration-readiness.yml"
   workflow_dispatch:
 
 permissions:
@@ -11,7 +8,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
