@@ -36,8 +36,14 @@ Secretsの値はソースコード・ログ・Artifactsへ出力しません。
 
 ## Migration state
 
-Public側のコードはWAKE本番版へ同期済みです。
-ただしSecretsの移行確認が完了するまでは定期scheduleを有効化しません。
-それまではWAKE Privateリポジトリ側の本番scheduleを維持し、二重実行や欠損を防ぎます。
+Public側のコードはWAKE本番版を基準に同期し、必要なSecretsの実通信確認も完了しています。
 
-`migration-readiness` WorkflowはSecretの「有無」だけを確認し、値は表示しません。
+定期処理は以下をPublic側が担当します。
+
+- 07:00 JST: daily-ingest
+- 07:30 JST: backfill-race-odds
+- 08:00 JST: build-corrections
+- 08:20 JST: refresh-wake-lab-exhibition-cache
+
+対応するPrivate側Workflowは手動フォールバックのみ残し、自動scheduleは停止済みです。
+`migration-readiness` Workflowは手動確認専用で、Secretの値は表示しません。
