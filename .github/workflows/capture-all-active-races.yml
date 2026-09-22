@@ -2,41 +2,29 @@ name: capture-all-active-races
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
 concurrency:
   group: capture-all-active-races
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   capture:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
-
-      - name: Capture all active venue races and AI predictions
+      - name: Capture active race data
         env:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
-          AUTOMATION_AUTH_SESSION_JSON: ${{ secrets.AUTOMATION_AUTH_SESSION_JSON }}
-
           CAPTURE_CONCURRENCY: "5"
-          AI_CAPTURE_CONCURRENCY: "2"
-
-          # 15分間隔でも取りこぼしにくいよう、締切30分前からAI保存対象
           AI_SAVE_BEFORE_MINUTES: "30"
-
-          RUNNER_NAME: "github-actions-primary"
+          RUNNER_NAME: "github-actions-public-fallback"
           RUN_ID: "github-${{ github.run_id }}-${{ github.run_attempt }}"
-
         run: node pipeline/capture_all_active_races.mjs
