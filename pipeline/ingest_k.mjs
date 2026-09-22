@@ -466,7 +466,7 @@ async function upsertBatch(SUPA, KEY, table, conflictCols, batch, depth = 0) {
 }
 
 async function upsertTable(table, rows, conflictCols) {
-  const SUPA = process.env.SUPABASE_URL;
+  const SUPA = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
   const KEY = process.env.SUPABASE_SERVICE_KEY;
 
   if (!SUPA || !KEY) {
