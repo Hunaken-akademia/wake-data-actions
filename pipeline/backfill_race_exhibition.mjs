@@ -30,6 +30,28 @@ async function rest(path) {
   return text ? JSON.parse(text) : [];
 }
 
+// PostgRESTはdb-max-rows(既定1000件)を超える結果を黙って切り詰める。
+// 1日分のrace_resultsは1レース6艇分の行を持つため、開催規模によっては
+// 楽に1000件を超え、place_noが大きい場(=order末尾)のレースが
+// サイレントに欠落し続ける不具合があった。Rangeヘッダー相当のoffset/limitで
+// 全件をページングして取得することでこれを回避する。
+const PAGE_SIZE = 1000;
+async function restAll(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  const out = [];
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}${sep}offset=${offset}&limit=${PAGE_SIZE}`, {
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Supabase ${res.status}: ${text.slice(0, 300)}`);
+    const page = text ? JSON.parse(text) : [];
+    out.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
 function addDays(date, days) {
   const d = new Date(`${date}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
@@ -50,7 +72,10 @@ async function resolveAutomaticRange() {
     rest("exhibition?select=race_date&order=race_date.asc&limit=1"),
   ]);
   // race_resultsが無い日まで遡っても展示だけ復元できないので、そこが実質的な下限。
-  const floor = earliestResult?.race_date && earliestResult.race_date > oneYearAgo ? earliestResult.race_date : oneYearAgo;
+  // 「today - 365日」は実データが無いときのフォールバックに過ぎない。これをfloorの
+  // 上限として使うと、実行日が進むたびにfloorが後ろへ這い上がり、earliestResultへ
+  // 到達する前に「もう遡る余地がない」と誤判定して止まってしまう(2026-09時点で実測)。
+  const floor = earliestResult?.race_date || oneYearAgo;
   const coveredFrom = earliestExhibition?.race_date || addDays(today, -1);
   const end = addDays(coveredFrom, -1);
   if (end < floor) return null; // もう遡る余地なし＝完了
@@ -73,8 +98,8 @@ if (!startDate) {
 
 async function racesForDate(date) {
   const [results, saved] = await Promise.all([
-    rest(`race_results?race_date=eq.${date}&select=place_no,race_no&order=place_no.asc,race_no.asc`),
-    rest(`exhibition?race_date=eq.${date}&select=place_no,race_no`),
+    restAll(`race_results?race_date=eq.${date}&select=place_no,race_no&order=place_no.asc,race_no.asc`),
+    restAll(`exhibition?race_date=eq.${date}&select=place_no,race_no`),
   ]);
   const done = new Set(saved.map((r) => `${r.place_no}:${r.race_no}`));
   const unique = new Map();
