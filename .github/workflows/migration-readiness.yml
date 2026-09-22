@@ -17,6 +17,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
+      EXPECTED_SUPABASE_URL: https://dcewdzagnomcnvteokwj.supabase.co
       WAKE_APP_URL: https://newhunaken456.vercel.app
     steps:
       - name: Verify required secrets are configured
@@ -33,19 +34,26 @@ jobs:
           done
           exit "$missing"
 
-      - name: Verify Supabase credentials
+      - name: Verify SUPABASE_URL value
+        if: always()
         shell: bash
         run: |
-          if [[ "$SUPABASE_URL" != https://*.supabase.co ]]; then
-            echo "::error::SUPABASE_URL must be the full https://<project-ref>.supabase.co URL"
+          if [ "$SUPABASE_URL" != "$EXPECTED_SUPABASE_URL" ]; then
+            echo "::error::SUPABASE_URL is not the full production project URL"
             exit 1
           fi
-          code="$(curl -sS -o /tmp/supabase.json -w "%{http_code}"             "$SUPABASE_URL/rest/v1/races?select=race_date&limit=1"             -H "apikey: $SUPABASE_SERVICE_KEY"             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")"
+          echo "SUPABASE_URL: OK"
+
+      - name: Verify Supabase service key
+        if: always()
+        shell: bash
+        run: |
+          code="$(curl -sS -o /tmp/supabase.json -w "%{http_code}"             "$EXPECTED_SUPABASE_URL/rest/v1/races?select=race_date&limit=1"             -H "apikey: $SUPABASE_SERVICE_KEY"             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")"
           if [ "$code" != "200" ]; then
-            echo "::error::Supabase credential check failed (HTTP $code)"
+            echo "::error::SUPABASE_SERVICE_KEY authentication failed (HTTP $code)"
             exit 1
           fi
-          echo "Supabase authentication: OK"
+          echo "SUPABASE_SERVICE_KEY authentication: OK"
 
       - name: Verify CAPTURE_TOKEN against WAKE production
         if: always()
