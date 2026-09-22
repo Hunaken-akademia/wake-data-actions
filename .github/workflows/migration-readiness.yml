@@ -1,6 +1,9 @@
 name: migration-readiness
 
 on:
+  push:
+    paths:
+      - ".github/workflows/migration-readiness.yml"
   workflow_dispatch:
 
 permissions:
@@ -14,6 +17,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
+      WAKE_APP_URL: https://newhunaken456.vercel.app
     steps:
       - name: Verify required secrets are configured
         shell: bash
@@ -28,3 +32,28 @@ jobs:
             fi
           done
           exit "$missing"
+
+      - name: Verify Supabase credentials
+        shell: bash
+        run: |
+          code="$(curl -sS -o /tmp/supabase.json -w "%{http_code}"             "$SUPABASE_URL/rest/v1/races?select=race_date&limit=1"             -H "apikey: $SUPABASE_SERVICE_KEY"             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY")"
+          if [ "$code" != "200" ]; then
+            echo "::error::Supabase credential check failed (HTTP $code)"
+            exit 1
+          fi
+          echo "Supabase authentication: OK"
+
+      - name: Verify CAPTURE_TOKEN against WAKE production
+        shell: bash
+        run: |
+          date="$(TZ=Asia/Tokyo date +%Y-%m-%d)"
+          code="$(curl -sS -o /tmp/wake.json -w "%{http_code}"             "$WAKE_APP_URL/api/yoso?action=ai_prediction_day&date=$date"             -H "x-capture-token: $CAPTURE_TOKEN")"
+          if [ "$code" != "200" ]; then
+            echo "::error::WAKE CAPTURE_TOKEN check failed (HTTP $code)"
+            exit 1
+          fi
+          if ! grep -q '"ok":true' /tmp/wake.json; then
+            echo "::error::WAKE CAPTURE_TOKEN check returned an unexpected response"
+            exit 1
+          fi
+          echo "WAKE CAPTURE_TOKEN authentication: OK"
