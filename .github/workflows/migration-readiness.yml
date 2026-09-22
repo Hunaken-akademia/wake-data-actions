@@ -1,9 +1,6 @@
 name: migration-readiness
 
 on:
-  push:
-    paths:
-      - ".github/workflows/migration-readiness.yml"
   workflow_dispatch:
 
 permissions:
