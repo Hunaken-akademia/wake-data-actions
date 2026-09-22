@@ -27,6 +27,27 @@ async function rest(path) {
   return text ? JSON.parse(text) : [];
 }
 
+// PostgRESTはdb-max-rows(既定1000件)を超える結果を黙って切り詰める。
+// 1日分のrace_resultsは開催規模によっては楽に1000件を超え、place_noが
+// 大きい場(=order末尾)のレースがサイレントに欠落し続ける不具合が
+// 他のbackfillスクリプトで見つかったため、同様にページングして防ぐ。
+const PAGE_SIZE = 1000;
+async function restAll(path) {
+  const sep = path.includes("?") ? "&" : "?";
+  const out = [];
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}${sep}offset=${offset}&limit=${PAGE_SIZE}`, {
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Supabase ${res.status}: ${text.slice(0, 300)}`);
+    const page = text ? JSON.parse(text) : [];
+    out.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
+  return out;
+}
+
 async function restWrite(path, method, body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method,
@@ -64,8 +85,8 @@ if (!startDate) {
 
 async function racesForDate(date) {
   const [results, saved] = await Promise.all([
-    rest(`race_results?race_date=eq.${date}&rank=gte.1&rank=lte.3&select=place_no,race_no&order=place_no.asc,race_no.asc`),
-    rest(`race_payouts?race_date=eq.${date}&select=place_no,race_no`),
+    restAll(`race_results?race_date=eq.${date}&rank=gte.1&rank=lte.3&select=place_no,race_no&order=place_no.asc,race_no.asc`),
+    restAll(`race_payouts?race_date=eq.${date}&select=place_no,race_no`),
   ]);
   const done = new Set(saved.map((r) => `${r.place_no}:${r.race_no}`));
   const unique = new Map();
