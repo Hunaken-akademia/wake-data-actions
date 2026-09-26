@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: repair-wake-recent-fast-followup
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   audit:
