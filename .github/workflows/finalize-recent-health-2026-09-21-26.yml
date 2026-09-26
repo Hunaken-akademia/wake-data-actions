@@ -26,6 +26,7 @@ jobs:
       APP_BASE_URL: https://newhunaken456.vercel.app
       WAKE_HEALTH_REQUIRE_AI: "0"
       WAKE_HEALTH_ODDS_REQUIRED_COUNT: "120"
+      WAKE_HEALTH_FINAL_AUDIT: "1"
       WAKE_HEALTH_REPAIR: "1"
       WAKE_HEALTH_WRITE_DB: "1"
       EXHIBITION_CONCURRENCY: "4"
