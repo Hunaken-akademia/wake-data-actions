@@ -476,7 +476,7 @@ async function repairFailures(items) {
 const first = await scan();
 await saveRun(first);
 console.log(`[wake-health] ${TARGET_DATE} expected=${first.summary.expectedRaces} complete=${first.summary.completeRaces} pending=${first.summary.pendingCount} failure=${first.summary.failureCount} unavailable=${first.summary.unavailableCount}`);
-console.log(`[wake-health] failures race=${first.summary.missingRace} start=${first.summary.missingStartList} exhibition=${first.summary.missingExhibition} snapshot=${first.summary.missingSnapshot} weather=${first.summary.missingWeather} odds=${first.summary.missingOdds} ai=${first.summary.missingAi} results=${first.summary.missingResults} payout=${first.summary.missingPayout}`);
+console.log(`[wake-health] failures race=${first.summary.missingRace} start=${first.summary.missingStartList} exhibition=${first.summary.missingExhibition} snapshot=${first.summary.missingSnapshot} weather=${first.summary.missingWeather} odds=${first.summary.missingOdds} deadline_odds=${first.summary.missingDeadlineOdds} ai=${first.summary.missingAi} results=${first.summary.missingResults} payout=${first.summary.missingPayout}`);
 for (const item of first.items.filter((x) => x.status !== "complete").slice(0, 80)) {
   console.log(`[wake-health:${item.status}] ${item.venue}${item.race_no}R missing=${item.missing_parts.join(",") || "-"} start=${item.detail.startListCount} ex=${item.detail.exCount} snapshot=${item.detail.snapshotOk ? "ok" : "ng"} weather=${item.detail.weatherOk ? "ok" : "ng"} odds=${item.detail.oddsCount} t5=${item.detail.deadlineOddsCount} ai=${item.detail.aiOk ? "ok" : "ng"} result=${item.detail.resultCount} payout=${item.detail.payoutOk ? "ok" : "ng"}`);
 }
