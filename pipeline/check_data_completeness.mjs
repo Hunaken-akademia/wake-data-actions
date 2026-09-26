@@ -128,7 +128,10 @@ async function fetchOfficialExpected() {
   return { expected, usableVenues, errors: results.filter((x) => !x?.ok).map((x) => ({ venue: x.venue, error: x.error })) };
 }
 
-function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now }) {
+function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now, afterRepair = false }) {
+  if (race?.officialCancelled === true) {
+    return { status: "unavailable", missing: [], reason: "official_cancelled" };
+  }
   if (race?.sourceUnavailable || race?.excluded_from_analysis === true) {
     return { status: "unavailable", missing: [], reason: race?.sourceUnavailable ? "source_not_provided" : "excluded_from_analysis" };
   }
@@ -153,6 +156,13 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
     return { status: "unavailable", missing: [], reason: "event_suspended" };
   }
 
+  // 取得を再試行しても過去の公式beforeinfoが返さない展示データは、
+  // 完走・払戻・オッズまで揃っている場合に限り「提供終了」として分離する。
+  // 初回scanではfailureのままにして必ず補修を試し、補修後scanだけで判定する。
+  if (afterRepair && resultCount >= 6 && missing.length > 0 && missing.every((part) => part === "exhibition")) {
+    return { status: "unavailable", missing: [], reason: "historical_exhibition_unavailable" };
+  }
+
   const post = postDateTime(TARGET_DATE, race?.post_time);
   const today = jstDate();
   if (TARGET_DATE > today) return { status: "pending", missing, reason: "future_date" };
@@ -165,7 +175,43 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
   return { status: "pending", missing, reason: "post_time_pending" };
 }
 
-async function scan() {
+async function fetchOfficialCancellationKeys(expectedMap, resultMap) {
+  const placeNos = uniq([...expectedMap.values()]
+    .filter((row) => (resultMap.get(raceKey(row.place_no, row.race_no))?.size || 0) < 6)
+    .map((row) => Number(row.place_no))
+    .filter((placeNo) => placeNo >= 1 && placeNo <= 24));
+  if (!placeNos.length) return { cancelled: new Set(), errors: [] };
+
+  const hd = TARGET_DATE.replaceAll("-", "");
+  const rows = await mapLimit(placeNos, 4, async (placeNo) => {
+    const jcd = String(placeNo).padStart(2, "0");
+    try {
+      const url = `https://www.boatrace.jp/owpc/pc/race/resultlist?hd=${hd}&jcd=${jcd}`;
+      const res = await fetch(url, { headers: { "user-agent": "WAKE-DataHealth/1.0" }, cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const html = await res.text();
+      const cancelled = [];
+      for (let raceNo = 1; raceNo <= 12; raceNo++) {
+        const anchor = new RegExp(`raceresult\\?rno=${raceNo}(?:&amp;|&)jcd=${jcd}(?:&amp;|&)hd=${hd}`);
+        const start = html.search(anchor);
+        if (start < 0) continue;
+        const end = html.indexOf("</tbody>", start);
+        const block = html.slice(start, end > start ? end : start + 2400);
+        if (block.includes("レース中止")) cancelled.push(raceKey(placeNo, raceNo));
+      }
+      return { placeNo, cancelled, error: null };
+    } catch (e) {
+      return { placeNo, cancelled: [], error: e?.message || String(e) };
+    }
+  });
+
+  return {
+    cancelled: new Set(rows.flatMap((row) => row.cancelled)),
+    errors: rows.filter((row) => row.error).map((row) => ({ placeNo: row.placeNo, error: row.error })),
+  };
+}
+
+async function scan({ afterRepair = false } = {}) {
   const official = await fetchOfficialExpected();
   const [races, preRace, exhibition, aiRows, reviewRows, oddsRows, results, payouts] = await Promise.all([
     restAll(`races?select=race_date,place_no,race_no,post_time,weather,wind_dir,wind_speed,wave,excluded_from_analysis&race_date=eq.${TARGET_DATE}&order=place_no.asc,race_no.asc`),
@@ -192,7 +238,7 @@ async function scan() {
   // DBにだけ存在するレースも監視対象から落とさない。ただし races 1行だけの
   // 孤立データは、順延・中止日に生成された仮レースのことがあるため対象外にする。
   const evidenceKeys = new Set([
-    ...preRace, ...exhibition, ...aiRows, ...reviewRows, ...oddsRows, ...results, ...payouts,
+    ...preRace, ...exhibition, ...aiRows, ...results, ...payouts,
   ].map((row) => raceKey(row.place_no, row.race_no)));
   for (const r of races) {
     const key = raceKey(r.place_no, r.race_no);
@@ -219,6 +265,7 @@ async function scan() {
   const preMap = countBoats(preRace);
   const exMap = countBoats(exhibition);
   const resultMap = countBoats(results);
+  const officialCancellations = await fetchOfficialCancellationKeys(expectedMap, resultMap);
 
   const aiMap = new Map();
   for (const row of aiRows) {
@@ -254,6 +301,7 @@ async function scan() {
         ...scheduled,
         ...(dbRace || {}),
         dbRace: !!dbRace,
+        officialCancelled: officialCancellations.cancelled.has(key),
         post_time: dbRace?.post_time || scheduled?.post_time || null,
       };
       const preCount = preMap.get(key)?.size || 0;
@@ -264,7 +312,7 @@ async function scan() {
       const oddsCount = oddsMap.get(key) || 0;
       const resultCount = resultMap.get(key)?.size || 0;
       const payoutOk = payoutMap.get(key) === true;
-      const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now });
+      const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now, afterRepair });
       return {
         target_date: TARGET_DATE,
         place_no: Number(race.place_no),
@@ -311,6 +359,11 @@ async function scan() {
     missingPayout: failures.filter((x) => x.missing_parts.includes("payout")).length,
     aiRequired: REQUIRE_AI,
     officialSchedule: { usableVenues: official.usableVenues, errorCount: official.errors.length, errors: official.errors.slice(0, 8) },
+    officialCancellations: {
+      count: officialCancellations.cancelled.size,
+      errorCount: officialCancellations.errors.length,
+      errors: officialCancellations.errors.slice(0, 8),
+    },
   };
   return { summary, items };
 }
@@ -418,7 +471,7 @@ for (const item of first.items.filter((x) => x.status !== "complete").slice(0, 8
 
 const repair = await repairFailures(first.items);
 if (repair.attempted) {
-  const second = await scan();
+  const second = await scan({ afterRepair: true });
   await saveRun(second);
   console.log(`[wake-health-after-repair] complete=${second.summary.completeRaces}/${second.summary.expectedRaces} pending=${second.summary.pendingCount} failure=${second.summary.failureCount} unavailable=${second.summary.unavailableCount}`);
 }
