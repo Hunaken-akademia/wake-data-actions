@@ -100,7 +100,7 @@ if (!startDate) {
 
 async function racesForDate(date) {
   const [results, saved] = await Promise.all([
-    restAll(`race_results?race_date=eq.${date}&select=place_no,race_no,boat&order=place_no.asc,race_no.asc`),
+    restAll(`race_results?race_date=eq.${date}&select=place_no,race_no,boat,result_status&order=place_no.asc,race_no.asc`),
     restAll(`race_odds_backfill?race_date=eq.${date}&select=place_no,race_no,status,odds_count`),
   ]);
   const savedByRace = new Map(saved.map((r) => [`${r.place_no}:${r.race_no}`, r]));
@@ -109,7 +109,8 @@ async function racesForDate(date) {
     const key = `${row.place_no}:${row.race_no}`;
     if (!unique.has(key)) unique.set(key, { place_no: row.place_no, race_no: row.race_no, boats: new Set() });
     const boat = Number(row.boat);
-    if (boat >= 1 && boat <= 6) unique.get(key).boats.add(boat);
+    const withdrawn = /^(ABSENT|SCRATCHED)$/i.test(String(row.result_status || ""));
+    if (!withdrawn && boat >= 1 && boat <= 6) unique.get(key).boats.add(boat);
   }
   return [...unique.entries()].filter(([key, row]) => {
     const savedRow = savedByRace.get(key);
