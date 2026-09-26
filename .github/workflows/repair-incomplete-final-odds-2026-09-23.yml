@@ -1,4 +1,4 @@
-name: Repair incomplete WAKE final odds 2026-09-23
+name: Repair incomplete WAKE recent final odds
 
 on:
   push:
@@ -31,9 +31,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Re-fetch incomplete final odds
-        run: node pipeline/backfill_race_odds.mjs 2026-09-23
-      - name: Verify repaired date
-        env:
-          WAKE_HEALTH_DATE: "2026-09-23"
-        run: node pipeline/check_data_completeness.mjs
+      - name: Re-fetch every incomplete final-odds grid
+        run: node pipeline/backfill_race_odds.mjs 2026-09-21 2026-09-26
+      - name: Verify all repaired dates
+        run: |
+          for target_date in 2026-09-21 2026-09-22 2026-09-23 2026-09-24 2026-09-25 2026-09-26; do
+            WAKE_HEALTH_DATE="$target_date" node pipeline/check_data_completeness.mjs
+          done
