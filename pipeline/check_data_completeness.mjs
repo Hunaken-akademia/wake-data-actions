@@ -319,6 +319,8 @@ async function scan({ afterRepair = false } = {}) {
       const oddsRequiredCount = activeResultCount >= 3
         ? Math.min(ODDS_REQUIRED_COUNT, activeResultCount * (activeResultCount - 1) * (activeResultCount - 2))
         : ODDS_REQUIRED_COUNT;
+      // 締切前は未投票組み合わせが0件のまま残るため、100点以上を正常取得とする。
+      const deadlineOddsRequiredCount = Math.min(100, oddsRequiredCount);
       const payoutOk = payoutMap.get(key) === true;
       const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, payoutOk, now, afterRepair });
       return {
@@ -341,6 +343,7 @@ async function scan({ afterRepair = false } = {}) {
           oddsCount,
           oddsRequiredCount,
           deadlineOddsCount,
+          deadlineOddsRequiredCount,
           resultCount,
           activeResultCount,
           payoutOk,
@@ -365,7 +368,7 @@ async function scan({ afterRepair = false } = {}) {
     missingSnapshot: failures.filter((x) => x.missing_parts.includes("snapshot")).length,
     missingWeather: failures.filter((x) => x.missing_parts.includes("weather")).length,
     missingOdds: failures.filter((x) => x.missing_parts.includes("odds")).length,
-    missingDeadlineOdds: items.filter((x) => x.detail.resultCount >= 3 && x.detail.deadlineOddsCount < x.detail.oddsRequiredCount).length,
+    missingDeadlineOdds: items.filter((x) => x.detail.resultCount >= 3 && x.detail.deadlineOddsCount < x.detail.deadlineOddsRequiredCount).length,
     missingAi: failures.filter((x) => x.missing_parts.includes("ai")).length,
     missingResults: failures.filter((x) => x.missing_parts.includes("results")).length,
     missingPayout: failures.filter((x) => x.missing_parts.includes("payout")).length,
