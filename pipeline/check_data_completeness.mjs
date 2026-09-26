@@ -8,7 +8,7 @@ const TARGET_DATE = String(process.env.WAKE_HEALTH_DATE || process.argv.find((x)
 const REPAIR = String(process.env.WAKE_HEALTH_REPAIR || "") === "1";
 const WRITE_DB = String(process.env.WAKE_HEALTH_WRITE_DB || "1") !== "0";
 const GRACE_MIN = Math.max(5, Math.min(60, Number(process.env.WAKE_HEALTH_GRACE_MIN || 15)));
-const ODDS_REQUIRED_COUNT = Math.max(1, Number(process.env.WAKE_HEALTH_ODDS_REQUIRED_COUNT || 100));
+const ODDS_REQUIRED_COUNT = Math.max(1, Number(process.env.WAKE_HEALTH_ODDS_REQUIRED_COUNT || 120));
 const REQUIRE_AI = String(process.env.WAKE_HEALTH_REQUIRE_AI || "0") === "1";
 const NO_ORIGINAL_DISPLAY_PLACES = new Set([3]);
 const SCHEDULE_CONCURRENCY = Math.max(1, Math.min(8, Number(process.env.WAKE_HEALTH_SCHEDULE_CONCURRENCY || 6)));
@@ -143,7 +143,10 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
   if (!snapshotOk) missing.push("snapshot");
   if (!weatherOk) missing.push("weather");
   if (REQUIRE_AI && !aiOk) missing.push("ai");
-  if (oddsCount < ODDS_REQUIRED_COUNT) missing.push("odds");
+  const oddsRequiredCount = resultCount >= 3
+    ? Math.min(ODDS_REQUIRED_COUNT, resultCount * (resultCount - 1) * (resultCount - 2))
+    : ODDS_REQUIRED_COUNT;
+  if (oddsCount < oddsRequiredCount) missing.push("odds");
   if (resultCount < 6) missing.push("results");
   if (!payoutOk) missing.push("payout");
   if (!missing.length) return { status: "complete", missing };
@@ -316,6 +319,9 @@ async function scan({ afterRepair = false } = {}) {
       const resultCount = resultMap.get(key)?.size || 0;
       const payoutOk = payoutMap.get(key) === true;
       const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now, afterRepair });
+      const oddsRequiredCount = resultCount >= 3
+        ? Math.min(ODDS_REQUIRED_COUNT, resultCount * (resultCount - 1) * (resultCount - 2))
+        : ODDS_REQUIRED_COUNT;
       return {
         target_date: TARGET_DATE,
         place_no: Number(race.place_no),
@@ -334,6 +340,7 @@ async function scan({ afterRepair = false } = {}) {
           aiRequired: REQUIRE_AI,
           aiOk,
           oddsCount,
+          oddsRequiredCount,
           deadlineOddsCount,
           resultCount,
           payoutOk,
@@ -358,7 +365,7 @@ async function scan({ afterRepair = false } = {}) {
     missingSnapshot: failures.filter((x) => x.missing_parts.includes("snapshot")).length,
     missingWeather: failures.filter((x) => x.missing_parts.includes("weather")).length,
     missingOdds: failures.filter((x) => x.missing_parts.includes("odds")).length,
-    missingDeadlineOdds: items.filter((x) => x.detail.resultCount >= 6 && x.detail.deadlineOddsCount < ODDS_REQUIRED_COUNT).length,
+    missingDeadlineOdds: items.filter((x) => x.detail.resultCount >= 3 && x.detail.deadlineOddsCount < x.detail.oddsRequiredCount).length,
     missingAi: failures.filter((x) => x.missing_parts.includes("ai")).length,
     missingResults: failures.filter((x) => x.missing_parts.includes("results")).length,
     missingPayout: failures.filter((x) => x.missing_parts.includes("payout")).length,
