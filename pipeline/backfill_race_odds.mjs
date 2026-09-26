@@ -101,9 +101,13 @@ if (!startDate) {
 async function racesForDate(date) {
   const [results, saved] = await Promise.all([
     restAll(`race_results?race_date=eq.${date}&select=place_no,race_no&order=place_no.asc,race_no.asc`),
-    restAll(`race_odds_backfill?race_date=eq.${date}&select=place_no,race_no`),
+    restAll(`race_odds_backfill?race_date=eq.${date}&select=place_no,race_no,status,odds_count`),
   ]);
-  const done = new Set(saved.map((r) => `${r.place_no}:${r.race_no}`));
+  // status=okでも120通りに満たない行は、途中までしか読めなかった取得失敗。
+  // unavailableは履歴として確定扱いにし、不完全なokだけを再試行する。
+  const done = new Set(saved
+    .filter((r) => r.status === "unavailable" || Number(r.odds_count || 0) >= 100)
+    .map((r) => `${r.place_no}:${r.race_no}`));
   const unique = new Map();
   for (const row of results) unique.set(`${row.place_no}:${row.race_no}`, row);
   return [...unique.values()].filter((r) => !done.has(`${r.place_no}:${r.race_no}`));
