@@ -100,17 +100,25 @@ if (!startDate) {
 
 async function racesForDate(date) {
   const [results, saved] = await Promise.all([
-    restAll(`race_results?race_date=eq.${date}&select=place_no,race_no&order=place_no.asc,race_no.asc`),
+    restAll(`race_results?race_date=eq.${date}&select=place_no,race_no,boat&order=place_no.asc,race_no.asc`),
     restAll(`race_odds_backfill?race_date=eq.${date}&select=place_no,race_no,status,odds_count`),
   ]);
-  // status=okでも120通りに満たない行は、途中までしか読めなかった取得失敗。
-  // unavailableは履歴として確定扱いにし、不完全なokだけを再試行する。
-  const done = new Set(saved
-    .filter((r) => r.status === "unavailable" || Number(r.odds_count || 0) >= 100)
-    .map((r) => `${r.place_no}:${r.race_no}`));
+  const savedByRace = new Map(saved.map((r) => [`${r.place_no}:${r.race_no}`, r]));
   const unique = new Map();
-  for (const row of results) unique.set(`${row.place_no}:${row.race_no}`, row);
-  return [...unique.values()].filter((r) => !done.has(`${r.place_no}:${r.race_no}`));
+  for (const row of results) {
+    const key = `${row.place_no}:${row.race_no}`;
+    if (!unique.has(key)) unique.set(key, { place_no: row.place_no, race_no: row.race_no, boats: new Set() });
+    const boat = Number(row.boat);
+    if (boat >= 1 && boat <= 6) unique.get(key).boats.add(boat);
+  }
+  return [...unique.entries()].filter(([key, row]) => {
+    const savedRow = savedByRace.get(key);
+    if (!savedRow) return true;
+    if (savedRow.status === "unavailable") return false;
+    const boats = row.boats.size;
+    const required = boats >= 3 ? boats * (boats - 1) * (boats - 2) : 120;
+    return Number(savedRow.odds_count || 0) < required;
+  }).map(([, row]) => ({ place_no: row.place_no, race_no: row.race_no }));
 }
 
 async function capture(date, row) {
