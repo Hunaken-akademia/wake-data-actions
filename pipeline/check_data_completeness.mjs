@@ -276,9 +276,11 @@ async function scan({ afterRepair = false } = {}) {
   }
   const reviewMap = new Set(reviewRows.map((row) => raceKey(row.place_no, row.race_no)));
   const oddsMap = new Map();
+  const deadlineOddsMap = new Map();
   for (const row of reviewRows) {
     const key = raceKey(row.place_no, row.race_no);
-    oddsMap.set(key, Math.max(oddsMap.get(key) || 0, Number(row.odds_t5_count || 0), Number(row.odds_count || 0)));
+    oddsMap.set(key, Math.max(oddsMap.get(key) || 0, Number(row.odds_count || 0)));
+    deadlineOddsMap.set(key, Math.max(deadlineOddsMap.get(key) || 0, Number(row.odds_t5_count || 0)));
   }
   for (const row of oddsRows) {
     const key = raceKey(row.place_no, row.race_no);
@@ -310,6 +312,7 @@ async function scan({ afterRepair = false } = {}) {
       const weatherOk = !!dbRace && !!String(dbRace.weather || "").trim() && dbRace.wind_dir != null && Number.isFinite(Number(dbRace.wind_speed)) && Number.isFinite(Number(dbRace.wave));
       const aiOk = aiMap.get(key) === true;
       const oddsCount = oddsMap.get(key) || 0;
+      const deadlineOddsCount = deadlineOddsMap.get(key) || 0;
       const resultCount = resultMap.get(key)?.size || 0;
       const payoutOk = payoutMap.get(key) === true;
       const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now, afterRepair });
@@ -331,6 +334,7 @@ async function scan({ afterRepair = false } = {}) {
           aiRequired: REQUIRE_AI,
           aiOk,
           oddsCount,
+          deadlineOddsCount,
           resultCount,
           payoutOk,
           reason: classified.reason || null,
@@ -354,6 +358,7 @@ async function scan({ afterRepair = false } = {}) {
     missingSnapshot: failures.filter((x) => x.missing_parts.includes("snapshot")).length,
     missingWeather: failures.filter((x) => x.missing_parts.includes("weather")).length,
     missingOdds: failures.filter((x) => x.missing_parts.includes("odds")).length,
+    missingDeadlineOdds: items.filter((x) => x.detail.resultCount >= 6 && x.detail.deadlineOddsCount < ODDS_REQUIRED_COUNT).length,
     missingAi: failures.filter((x) => x.missing_parts.includes("ai")).length,
     missingResults: failures.filter((x) => x.missing_parts.includes("results")).length,
     missingPayout: failures.filter((x) => x.missing_parts.includes("payout")).length,
@@ -466,7 +471,7 @@ await saveRun(first);
 console.log(`[wake-health] ${TARGET_DATE} expected=${first.summary.expectedRaces} complete=${first.summary.completeRaces} pending=${first.summary.pendingCount} failure=${first.summary.failureCount} unavailable=${first.summary.unavailableCount}`);
 console.log(`[wake-health] failures race=${first.summary.missingRace} start=${first.summary.missingStartList} exhibition=${first.summary.missingExhibition} snapshot=${first.summary.missingSnapshot} weather=${first.summary.missingWeather} odds=${first.summary.missingOdds} ai=${first.summary.missingAi} results=${first.summary.missingResults} payout=${first.summary.missingPayout}`);
 for (const item of first.items.filter((x) => x.status !== "complete").slice(0, 80)) {
-  console.log(`[wake-health:${item.status}] ${item.venue}${item.race_no}R missing=${item.missing_parts.join(",") || "-"} start=${item.detail.startListCount} ex=${item.detail.exCount} snapshot=${item.detail.snapshotOk ? "ok" : "ng"} weather=${item.detail.weatherOk ? "ok" : "ng"} odds=${item.detail.oddsCount} ai=${item.detail.aiOk ? "ok" : "ng"} result=${item.detail.resultCount} payout=${item.detail.payoutOk ? "ok" : "ng"}`);
+  console.log(`[wake-health:${item.status}] ${item.venue}${item.race_no}R missing=${item.missing_parts.join(",") || "-"} start=${item.detail.startListCount} ex=${item.detail.exCount} snapshot=${item.detail.snapshotOk ? "ok" : "ng"} weather=${item.detail.weatherOk ? "ok" : "ng"} odds=${item.detail.oddsCount} t5=${item.detail.deadlineOddsCount} ai=${item.detail.aiOk ? "ok" : "ng"} result=${item.detail.resultCount} payout=${item.detail.payoutOk ? "ok" : "ng"}`);
 }
 
 const repair = await repairFailures(first.items);
