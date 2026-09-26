@@ -128,7 +128,7 @@ async function fetchOfficialExpected() {
   return { expected, usableVenues, errors: results.filter((x) => !x?.ok).map((x) => ({ venue: x.venue, error: x.error })) };
 }
 
-function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now, afterRepair = false }) {
+function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, payoutOk, now, afterRepair = false }) {
   if (race?.officialCancelled === true) {
     return { status: "unavailable", missing: [], reason: "official_cancelled" };
   }
@@ -143,9 +143,6 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
   if (!snapshotOk) missing.push("snapshot");
   if (!weatherOk) missing.push("weather");
   if (REQUIRE_AI && !aiOk) missing.push("ai");
-  const oddsRequiredCount = resultCount >= 3
-    ? Math.min(ODDS_REQUIRED_COUNT, resultCount * (resultCount - 1) * (resultCount - 2))
-    : ODDS_REQUIRED_COUNT;
   if (oddsCount < oddsRequiredCount) missing.push("odds");
   if (resultCount < 6) missing.push("results");
   if (!payoutOk) missing.push("payout");
@@ -268,6 +265,7 @@ async function scan({ afterRepair = false } = {}) {
   const preMap = countBoats(preRace);
   const exMap = countBoats(exhibition);
   const resultMap = countBoats(results);
+  const activeResultMap = countBoats(results.filter((row) => !/^(ABSENT|SCRATCHED)$/i.test(String(row.result_status || ""))));
   const officialCancellations = await fetchOfficialCancellationKeys(expectedMap, resultMap);
 
   const aiMap = new Map();
@@ -317,11 +315,12 @@ async function scan({ afterRepair = false } = {}) {
       const oddsCount = oddsMap.get(key) || 0;
       const deadlineOddsCount = deadlineOddsMap.get(key) || 0;
       const resultCount = resultMap.get(key)?.size || 0;
-      const payoutOk = payoutMap.get(key) === true;
-      const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, resultCount, payoutOk, now, afterRepair });
-      const oddsRequiredCount = resultCount >= 3
-        ? Math.min(ODDS_REQUIRED_COUNT, resultCount * (resultCount - 1) * (resultCount - 2))
+      const activeResultCount = activeResultMap.get(key)?.size || 0;
+      const oddsRequiredCount = activeResultCount >= 3
+        ? Math.min(ODDS_REQUIRED_COUNT, activeResultCount * (activeResultCount - 1) * (activeResultCount - 2))
         : ODDS_REQUIRED_COUNT;
+      const payoutOk = payoutMap.get(key) === true;
+      const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, payoutOk, now, afterRepair });
       return {
         target_date: TARGET_DATE,
         place_no: Number(race.place_no),
@@ -343,6 +342,7 @@ async function scan({ afterRepair = false } = {}) {
           oddsRequiredCount,
           deadlineOddsCount,
           resultCount,
+          activeResultCount,
           payoutOk,
           reason: classified.reason || null,
           scheduleSource: race.scheduleSource || null,
