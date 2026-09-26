@@ -91,7 +91,13 @@ async function fetchOfficialExpected() {
       const res = await fetch(`${APP_URL}/api/yoso?${q}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-      return { venue, ok: true, noRace: data.noRace === true, schedule: Array.isArray(data.schedule) ? data.schedule : [] };
+      return {
+        venue,
+        ok: true,
+        noRace: data.noRace === true,
+        eventDay: String(data.eventDay || ""),
+        schedule: Array.isArray(data.schedule) ? data.schedule : [],
+      };
     } catch (e) {
       return { venue, ok: false, noRace: false, schedule: [], error: e?.message || String(e) };
     }
@@ -114,6 +120,7 @@ async function fetchOfficialExpected() {
         race_no: raceNo,
         post_time: deadline,
         sourceUnavailable,
+        eventDay: item.eventDay || "",
         scheduleSource: "official_schedule",
       });
     }
@@ -137,6 +144,14 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
   if (resultCount < 6) missing.push("results");
   if (!payoutOk) missing.push("payout");
   if (!missing.length) return { status: "complete", missing };
+
+  // 公式が「順延・中止・打切」と示すレースで結果自体が存在しない場合は、
+  // 取得漏れではなく提供対象外として扱う。途中打切りの日は完走済みレースだけ
+  // 通常どおり監査し、未実施レースだけを unavailable に分ける。
+  const eventSuspended = /順延|中止|打ち切り|打切/.test(String(race?.eventDay || ""));
+  if (eventSuspended && resultCount < 6) {
+    return { status: "unavailable", missing: [], reason: "event_suspended" };
+  }
 
   const post = postDateTime(TARGET_DATE, race?.post_time);
   const today = jstDate();
@@ -174,10 +189,21 @@ async function scan() {
       for (let raceNo = 1; raceNo <= 12; raceNo++) expectedMap.set(raceKey(placeNo, raceNo), { place_no: placeNo, race_no: raceNo, scheduleSource: "database_fallback" });
     }
   }
-  // DBにだけ存在するレースも監視対象から落とさない。
+  // DBにだけ存在するレースも監視対象から落とさない。ただし races 1行だけの
+  // 孤立データは、順延・中止日に生成された仮レースのことがあるため対象外にする。
+  const evidenceKeys = new Set([
+    ...preRace, ...exhibition, ...aiRows, ...reviewRows, ...oddsRows, ...results, ...payouts,
+  ].map((row) => raceKey(row.place_no, row.race_no)));
   for (const r of races) {
     const key = raceKey(r.place_no, r.race_no);
-    if (!expectedMap.has(key)) expectedMap.set(key, { place_no: Number(r.place_no), race_no: Number(r.race_no), post_time: r.post_time || null, scheduleSource: "database_extra" });
+    if (!expectedMap.has(key) && (evidenceKeys.has(key) || !official.expected.size)) {
+      expectedMap.set(key, {
+        place_no: Number(r.place_no),
+        race_no: Number(r.race_no),
+        post_time: r.post_time || null,
+        scheduleSource: "database_extra",
+      });
+    }
   }
 
   const countBoats = (rows) => {
@@ -393,4 +419,3 @@ if (repair.attempted) {
   await saveRun(second);
   console.log(`[wake-health-after-repair] complete=${second.summary.completeRaces}/${second.summary.expectedRaces} pending=${second.summary.pendingCount} failure=${second.summary.failureCount} unavailable=${second.summary.unavailableCount}`);
 }
-
