@@ -1,0 +1,67 @@
+name: wake-data-health
+
+on:
+  schedule:
+    - cron: "40 23 * * *" # JST 08:40、前日分を監査・補修
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "対象日 YYYY-MM-DD（空ならJST前日）"
+        required: false
+        type: string
+      repair:
+        description: "欠損している部分だけ再取得する"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wake-data-health
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve audit date and repair mode
+        id: params
+        env:
+          INPUT_DATE: ${{ inputs.target_date || '' }}
+          INPUT_REPAIR: ${{ inputs.repair || false }}
+        run: |
+          if [ -n "$INPUT_DATE" ]; then
+            TARGET_DATE="$INPUT_DATE"
+          else
+            TARGET_DATE="$(TZ=Asia/Tokyo date -d 'yesterday' +%F)"
+          fi
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "$INPUT_REPAIR" = "true" ]; then
+            REPAIR=1
+          else
+            REPAIR=0
+          fi
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "repair=$REPAIR" >> "$GITHUB_OUTPUT"
+
+      - name: Audit and selectively repair yesterday
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PUBLIC_APP_URL: https://newhunaken456.vercel.app
+          CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
+          WAKE_HEALTH_DATE: ${{ steps.params.outputs.target_date }}
+          WAKE_HEALTH_REPAIR: ${{ steps.params.outputs.repair }}
+          WAKE_HEALTH_WRITE_DB: "1"
+          WAKE_HEALTH_REQUIRE_AI: "0"
+          RESULT_CAPTURE_CONCURRENCY: "4"
+          EXHIBITION_CONCURRENCY: "4"
+          ODDS_CONCURRENCY: "4"
+        run: node pipeline/check_data_completeness.mjs
