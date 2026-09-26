@@ -1,4 +1,4 @@
-name: Repair WAKE recent gaps 2026-09-21 to 09-26
+name: Finalize WAKE recent derived caches
 
 on:
   push:
@@ -12,71 +12,24 @@ permissions:
 
 concurrency:
   group: repair-wake-recent-gaps-2026-09-21-26
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   repair:
     runs-on: ubuntu-latest
-    timeout-minutes: 210
+    timeout-minutes: 60
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       CAPTURE_TOKEN: ${{ secrets.CAPTURE_TOKEN }}
       PUBLIC_APP_URL: https://newhunaken456.vercel.app
       APP_BASE_URL: https://newhunaken456.vercel.app
-      RESULT_CAPTURE_CONCURRENCY: "4"
-      PAYOUT_CONCURRENCY: "3"
-      ODDS_CONCURRENCY: "4"
-      EXHIBITION_CONCURRENCY: "4"
-      WAKE_HEALTH_REQUIRE_AI: "0"
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      - name: Install K-file decoder
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lhasa
-          cd pipeline
-          npm install --no-save iconv-lite
-
-      - name: Restore authoritative K results and weather
-        run: |
-          for target_date in 2026-09-21 2026-09-22 2026-09-23 2026-09-24 2026-09-25 2026-09-26; do
-            echo "K ingest: $target_date"
-            if ! (cd pipeline && node ingest_k.mjs "$target_date"); then
-              echo "::warning::K file not ready or unavailable for $target_date; continuing with result API"
-            fi
-          done
-
-      - name: Re-fetch results directly
-        run: |
-          for target_date in 2026-09-21 2026-09-22 2026-09-23 2026-09-24 2026-09-25 2026-09-26; do
-            node pipeline/capture_race_results.mjs "$target_date"
-          done
-
-      - name: Re-fetch payouts
-        run: |
-          for target_date in 2026-09-21 2026-09-22 2026-09-23 2026-09-24 2026-09-25 2026-09-26; do
-            node pipeline/backfill_race_payouts.mjs "$target_date"
-          done
-
-      - name: Re-fetch final odds and exhibition
-        run: |
-          node pipeline/backfill_race_odds.mjs 2026-09-21 2026-09-26
-          node pipeline/backfill_race_exhibition.mjs 2026-09-21 2026-09-26
-
-      - name: Audit and repair any remaining recoverable parts
-        env:
-          WAKE_HEALTH_REPAIR: "1"
-          WAKE_HEALTH_WRITE_DB: "1"
-        run: |
-          for target_date in 2026-09-21 2026-09-22 2026-09-23 2026-09-24 2026-09-25 2026-09-26; do
-            WAKE_HEALTH_DATE="$target_date" node pipeline/check_data_completeness.mjs
-          done
 
       - name: Refresh derived correction and WAKE LAB caches
         run: |
