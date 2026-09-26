@@ -364,7 +364,9 @@ async function repairRaceIdentity(items, part) {
   const results = await mapLimit(targets, 4, async (x) => {
     const params = part === "start_list"
       ? { action: "prerace", venue: x.venue, race: String(x.race_no), date: TARGET_DATE, t: String(Date.now()) }
-      : { action: "capture", venue: x.venue, race: String(x.race_no), date: TARGET_DATE, final: "1", t: String(Date.now()) };
+      : part === "results"
+        ? { action: "result", venue: x.venue, race: String(x.race_no), date: TARGET_DATE, t: String(Date.now()) }
+        : { action: "capture", venue: x.venue, race: String(x.race_no), date: TARGET_DATE, final: "1", t: String(Date.now()) };
     try {
       const res = await fetch(`${APP_URL}/api/yoso?${new URLSearchParams(params)}`, {
         cache: "no-store",
@@ -393,10 +395,11 @@ async function repairFailures(items) {
   if (parts.includes("start_list")) results.start_list = await repairRaceIdentity(failures, "start_list");
   if (parts.includes("snapshot")) results.snapshot = await repairRaceIdentity(failures, "snapshot");
   if (parts.includes("weather")) results.weather = await repairRaceIdentity(failures, "weather");
-  // その他は既存のパーツ別補修処理を利用。payoutは結果再取得時に同時保存される。
+  // その他は既存のパーツ別補修処理を利用する。
   if (parts.includes("exhibition")) results.exhibition = runRepair("exhibition", process.execPath, ["pipeline/backfill_race_exhibition.mjs", TARGET_DATE]);
   if (parts.includes("odds")) results.odds = runRepair("odds", process.execPath, ["pipeline/backfill_race_odds.mjs", TARGET_DATE]);
-  if (parts.includes("results") || parts.includes("payout")) results.results = runRepair("results+payout", process.execPath, ["pipeline/capture_race_results.mjs", TARGET_DATE]);
+  if (parts.includes("results")) results.results = await repairRaceIdentity(failures, "results");
+  if (parts.includes("payout")) results.payout = runRepair("payout", process.execPath, ["pipeline/backfill_race_payouts.mjs", TARGET_DATE]);
   if (REQUIRE_AI && parts.includes("ai")) results.ai = runRepair("ai", process.execPath, ["pipeline/capture_nightly_ai_predictions.mjs"], {
     AI_CAPTURE_DATE: TARGET_DATE,
     AI_CAPTURE_FORCE_RECAPTURE: "0",
