@@ -56,7 +56,7 @@ jobs:
           echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
           echo "repair=$REPAIR" >> "$GITHUB_OUTPUT"
 
-      - name: Audit and selectively repair yesterday
+      - name: Audit recent dates and selectively repair missing data
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
