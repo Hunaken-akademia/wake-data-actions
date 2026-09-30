@@ -129,7 +129,7 @@ async function fetchOfficialExpected() {
   return { expected, usableVenues, errors: results.filter((x) => !x?.ok).map((x) => ({ venue: x.venue, error: x.error })) };
 }
 
-function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, payoutOk, now, afterRepair = false }) {
+function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, activeResultCount, payoutOk, now, afterRepair = false }) {
   if (race?.officialCancelled === true) {
     return { status: "unavailable", missing: [], reason: "official_cancelled" };
   }
@@ -157,11 +157,11 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
     return { status: "unavailable", missing: [], reason: "event_suspended" };
   }
 
-  // 取得を再試行しても過去の公式beforeinfoが返さない展示データは、
-  // 完走・払戻・オッズまで揃っている場合に限り「提供終了」として分離する。
-  // 初回scanではfailureのままにして必ず補修を試し、補修後scanだけで判定する。
-  if (afterRepair && resultCount >= 6 && missing.length > 0 && missing.every((part) => part === "exhibition")) {
-    return { status: "unavailable", missing: [], reason: "historical_exhibition_unavailable" };
+  // 欠場が公式結果で確認できる5艇以下のレースは6艇分析の対象外。
+  // 通常の6艇立ての取得失敗を「提供終了」として成功扱いにしない。
+  if (resultCount >= 6 && activeResultCount >= 3 && activeResultCount < 6
+    && missing.length > 0 && missing.every((part) => part === "exhibition" || part === "ai")) {
+    return { status: "unavailable", missing: [], reason: "reduced_field_analysis" };
   }
 
   const post = postDateTime(TARGET_DATE, race?.post_time);
@@ -332,7 +332,7 @@ async function scan({ afterRepair = false } = {}) {
       // 締切前は未投票組み合わせが0件のまま残るため、100点以上を正常取得とする。
       const deadlineOddsRequiredCount = Math.min(100, oddsRequiredCount);
       const payoutOk = payoutMap.get(key) === true;
-      const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, payoutOk, now, afterRepair });
+      const classified = classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, oddsCount, oddsRequiredCount, resultCount, activeResultCount, payoutOk, now, afterRepair });
       return {
         target_date: TARGET_DATE,
         place_no: Number(race.place_no),
