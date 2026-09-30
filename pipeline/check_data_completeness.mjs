@@ -214,15 +214,16 @@ async function fetchOfficialCancellationKeys(expectedMap, resultMap) {
 
 async function scan({ afterRepair = false } = {}) {
   const official = await fetchOfficialExpected();
-  const [races, preRace, exhibition, aiRows, reviewRows, oddsRows, results, payouts] = await Promise.all([
+  const [races, preRace, exhibition, aiRows, reviewRows, oddsRows, results, payouts, manualWinds] = await Promise.all([
     restAll(`races?select=race_date,place_no,race_no,post_time,weather,wind_dir,wind_speed,wave,excluded_from_analysis&race_date=eq.${TARGET_DATE}&order=place_no.asc,race_no.asc`),
     restAll(`pre_race_status?select=place_no,race_no,boat&race_date=eq.${TARGET_DATE}`),
     restAll(`exhibition?select=place_no,race_no,boat&race_date=eq.${TARGET_DATE}`),
     restAll(`ai_prediction_snapshots?select=place_no,race_no,ranked,bets,captured_at&race_date=eq.${TARGET_DATE}`),
-    restAll(`race_review_snapshots?select=place_no,race_no,odds_count,odds_t5_count,is_final,captured_at&race_date=eq.${TARGET_DATE}`),
+    restAll(`race_review_snapshots?select=place_no,race_no,odds_count,odds_t5_count,is_final,captured_at,environment:snapshot->weather&race_date=eq.${TARGET_DATE}`),
     restAll(`race_odds_backfill?select=place_no,race_no,odds_count,status,fetched_at&race_date=eq.${TARGET_DATE}`),
     restAll(`race_results?select=place_no,race_no,boat,rank,result_status&race_date=eq.${TARGET_DATE}`),
     restAll(`race_payouts?select=place_no,race_no,trifecta_result,trifecta_payout_per_100&race_date=eq.${TARGET_DATE}`),
+    restAll(`yoso_cache?select=venue,race_no,payload&cache_type=eq.manual_wind&race_date=eq.${TARGET_DATE}`),
   ]);
 
   const raceMap = new Map(races.map((r) => [raceKey(r.place_no, r.race_no), r]));
@@ -277,6 +278,8 @@ async function scan({ afterRepair = false } = {}) {
     aiMap.set(key, aiMap.get(key) === true || (rankedN >= 6 && betsN > 0));
   }
   const reviewMap = new Set(reviewRows.map((row) => raceKey(row.place_no, row.race_no)));
+  const environmentMap = new Map(reviewRows.map((row) => [raceKey(row.place_no,row.race_no), row.environment || {}]));
+  const windMap = new Map(manualWinds.map((row) => [raceKey(placeByVenue[row.venue],row.race_no), String(row.payload?.wind || "").trim()]));
   const oddsMap = new Map();
   const deadlineOddsMap = new Map();
   for (const row of reviewRows) {
@@ -311,7 +314,13 @@ async function scan({ afterRepair = false } = {}) {
       const preCount = preMap.get(key)?.size || 0;
       const exCount = exMap.get(key)?.size || 0;
       const snapshotOk = reviewMap.has(key);
-      const weatherOk = !!dbRace && !!String(dbRace.weather || "").trim() && dbRace.wind_dir != null && Number.isFinite(Number(dbRace.wind_speed)) && Number.isFinite(Number(dbRace.wave));
+      const environment = environmentMap.get(key) || {};
+      const storedWind = windMap.get(key) || "";
+      const weatherInRace = !!dbRace && !!String(dbRace.weather || "").trim() && dbRace.wind_dir != null && dbRace.wind_speed != null && dbRace.wave != null && Number.isFinite(Number(dbRace.wind_speed)) && Number.isFinite(Number(dbRace.wave));
+      // The live tool keeps verified wind separately from race metadata.
+      // Validate those stored inputs instead of recapturing every race forever.
+      const weatherInSnapshot = !!storedWind && environment.wave != null && String(environment.wave).trim() !== "" && Number.isFinite(Number(environment.wave));
+      const weatherOk = weatherInRace || weatherInSnapshot;
       const aiOk = aiMap.get(key) === true;
       const oddsCount = oddsMap.get(key) || 0;
       const deadlineOddsCount = deadlineOddsMap.get(key) || 0;
