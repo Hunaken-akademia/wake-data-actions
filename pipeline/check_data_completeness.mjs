@@ -379,7 +379,7 @@ async function scan({ afterRepair = false } = {}) {
     missingWeather: failures.filter((x) => x.missing_parts.includes("weather")).length,
     missingOdds: failures.filter((x) => x.missing_parts.includes("odds")).length,
     missingDeadlineOdds: items.filter((x) => x.detail.resultCount >= 3 && x.detail.deadlineOddsCount < x.detail.deadlineOddsRequiredCount).length,
-    missingAi: failures.filter((x) => x.missing_parts.includes("ai")).length,
+    missingAi: items.filter((x) => x.status !== "unavailable" && !x.detail.aiOk).length,
     missingResults: failures.filter((x) => x.missing_parts.includes("results")).length,
     missingPayout: failures.filter((x) => x.missing_parts.includes("payout")).length,
     aiRequired: REQUIRE_AI,
