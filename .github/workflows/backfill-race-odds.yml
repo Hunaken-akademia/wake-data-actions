@@ -50,7 +50,7 @@ jobs:
           echo "start=$START" >> "$GITHUB_OUTPUT"
           echo "end=$END" >> "$GITHUB_OUTPUT"
 
-      - name: Capture latest settled day odds
+      - name: Capture recent settled odds and recover missed scheduled runs
         if: github.event_name == 'schedule' || github.event_name == 'push'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
