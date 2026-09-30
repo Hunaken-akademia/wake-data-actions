@@ -71,7 +71,8 @@ jobs:
           ODDS_CONCURRENCY: "4"
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            for TARGET_DATE in 2026-09-28 2026-09-29; do
+            for DAYS_AGO in 2 1; do
+              TARGET_DATE="$(TZ=Asia/Tokyo date -d "$DAYS_AGO days ago" +%F)"
               WAKE_HEALTH_DATE="$TARGET_DATE" node pipeline/check_data_completeness.mjs || FAILED=1
             done
             exit "${FAILED:-0}"
