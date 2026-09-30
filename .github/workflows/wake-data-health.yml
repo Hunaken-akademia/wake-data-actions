@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/wake-data-health.yml"
       - "lib/service-capture-auth.js"
+      - "pipeline/check_data_completeness.mjs"
   schedule:
     - cron: "40 23 * * *" # JST 08:40、前日分を監査・補修
   workflow_dispatch:
@@ -68,4 +69,12 @@ jobs:
           RESULT_CAPTURE_CONCURRENCY: "4"
           EXHIBITION_CONCURRENCY: "4"
           ODDS_CONCURRENCY: "4"
-        run: node pipeline/check_data_completeness.mjs
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            for TARGET_DATE in 2026-09-28 2026-09-29; do
+              WAKE_HEALTH_DATE="$TARGET_DATE" node pipeline/check_data_completeness.mjs || FAILED=1
+            done
+            exit "${FAILED:-0}"
+          else
+            node pipeline/check_data_completeness.mjs
+          fi
