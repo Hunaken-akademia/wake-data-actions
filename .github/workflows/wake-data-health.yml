@@ -1,6 +1,10 @@
 name: wake-data-health
 
 on:
+  push:
+    paths:
+      - ".github/workflows/wake-data-health.yml"
+      - "lib/service-capture-auth.js"
   schedule:
     - cron: "40 23 * * *" # JST 08:40、前日分を監査・補修
   workflow_dispatch:
@@ -43,7 +47,7 @@ jobs:
           else
             TARGET_DATE="$(TZ=Asia/Tokyo date -d 'yesterday' +%F)"
           fi
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "$INPUT_REPAIR" = "true" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "push" ] || [ "$INPUT_REPAIR" = "true" ]; then
             REPAIR=1
           else
             REPAIR=0

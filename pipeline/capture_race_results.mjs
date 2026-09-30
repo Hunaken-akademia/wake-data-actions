@@ -1,3 +1,4 @@
+import { captureFetch as fetch } from "../lib/service-capture-auth.js";
 // ============================================================
 // 全開催場の確定結果（着順・実ST・進入・決まり手・F）をSupabaseへ保存する。
 // Vercelの /api/yoso?action=result を叩き、同じレースはupsertで欠損補修する。

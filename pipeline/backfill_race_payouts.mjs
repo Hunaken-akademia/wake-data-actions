@@ -1,3 +1,4 @@
+import { captureFetch as fetch } from "../lib/service-capture-auth.js";
 // 公式結果ページから3連単払戻金を復元し、race_payoutsへ保存する。
 // 例: node pipeline/backfill_race_payouts.mjs 2026-08-19
 //     node pipeline/backfill_race_payouts.mjs 2025-07-07 2025-07-31

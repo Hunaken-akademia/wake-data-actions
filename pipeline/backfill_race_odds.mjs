@@ -1,3 +1,4 @@
+import { captureFetch as fetch } from "../lib/service-capture-auth.js";
 // 過去レースの確定オッズ(3連単・全組み合わせ)を復元し、race_odds_backfillへ保存する。
 // backfill_race_exhibition.mjsと同じ仕組み。締切後にオッズは変動しないため、
 // 確定オッズ=予想時点オッズとして評価差・回収率のバックテストに使える。
@@ -115,7 +116,11 @@ async function racesForDate(date) {
   return [...unique.entries()].filter(([key, row]) => {
     const savedRow = savedByRace.get(key);
     if (!savedRow) return true;
-    if (savedRow.status === "unavailable") return false;
+    if (savedRow.status === "unavailable") {
+      // Recent upstream/auth failures must not permanently suppress recovery.
+      const recentFloor = addDays(new Date().toISOString().slice(0, 10), -7);
+      return date >= recentFloor;
+    }
     const boats = row.boats.size;
     const required = boats >= 3 ? boats * (boats - 1) * (boats - 2) : 120;
     return Number(savedRow.odds_count || 0) < required;
@@ -152,4 +157,4 @@ for (const date of datesBetween(startDate, endDate)) {
   }
 }
 console.log(`odds backfill done saved=${savedCount} unavailable=${unavailableCount} failed=${failedCount}`);
-if (failedCount > 0 && savedCount === 0 && unavailableCount === 0) process.exit(1);
+if (failedCount > 0) process.exitCode = 1;

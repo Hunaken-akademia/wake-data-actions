@@ -1,3 +1,4 @@
+import { captureFetch as fetch } from "../lib/service-capture-auth.js";
 import { spawnSync } from "node:child_process";
 
 const SUPABASE_URL = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
@@ -373,6 +374,7 @@ async function scan({ afterRepair = false } = {}) {
     missingResults: failures.filter((x) => x.missing_parts.includes("results")).length,
     missingPayout: failures.filter((x) => x.missing_parts.includes("payout")).length,
     aiRequired: REQUIRE_AI,
+    missingAiSnapshots: items.filter((x) => x.status !== "unavailable" && !x.detail.aiOk).length,
     officialSchedule: { usableVenues: official.usableVenues, errorCount: official.errors.length, errors: official.errors.slice(0, 8) },
     officialCancellations: {
       count: officialCancellations.cancelled.size,
@@ -484,9 +486,13 @@ for (const item of first.items.filter((x) => x.status !== "complete").slice(0, 8
   console.log(`[wake-health:${item.status}] ${item.venue}${item.race_no}R missing=${item.missing_parts.join(",") || "-"} start=${item.detail.startListCount} ex=${item.detail.exCount} snapshot=${item.detail.snapshotOk ? "ok" : "ng"} weather=${item.detail.weatherOk ? "ok" : "ng"} odds=${item.detail.oddsCount} t5=${item.detail.deadlineOddsCount} ai=${item.detail.aiOk ? "ok" : "ng"} result=${item.detail.resultCount} payout=${item.detail.payoutOk ? "ok" : "ng"}`);
 }
 
+let finalScan = first;
 const repair = await repairFailures(first.items);
 if (repair.attempted) {
   const second = await scan({ afterRepair: true });
   await saveRun(second);
+  finalScan = second;
   console.log(`[wake-health-after-repair] complete=${second.summary.completeRaces}/${second.summary.expectedRaces} pending=${second.summary.pendingCount} failure=${second.summary.failureCount} unavailable=${second.summary.unavailableCount}`);
 }
+
+if (finalScan.summary.failureCount > 0) process.exitCode = 1;

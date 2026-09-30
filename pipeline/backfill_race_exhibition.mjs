@@ -1,3 +1,4 @@
+import { captureFetch as fetch } from "../lib/service-capture-auth.js";
 // 公式beforeinfo（過去日付を指定して再取得可能）から展示タイム・1周・回り足を復元し、
 // exhibitionへ保存する。backfill_race_payouts.mjsと同じ仕組み。
 // 例: node pipeline/backfill_race_exhibition.mjs 2026-08-19

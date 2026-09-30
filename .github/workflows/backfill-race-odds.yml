@@ -1,6 +1,9 @@
 name: backfill-race-odds
 
 on:
+  push:
+    paths:
+      - ".github/workflows/backfill-race-odds.yml"
   schedule:
     - cron: "30 22 * * *" # JST 07:30
   workflow_dispatch:
@@ -48,7 +51,7 @@ jobs:
           echo "end=$END" >> "$GITHUB_OUTPUT"
 
       - name: Capture latest settled day odds
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' || github.event_name == 'push'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
@@ -57,9 +60,11 @@ jobs:
         run: |
           RECENT_DATE="$(TZ=Asia/Tokyo date -d 'yesterday' +%F)"
           echo "recent settled odds: $RECENT_DATE"
-          node pipeline/backfill_race_odds.mjs "$RECENT_DATE" "$RECENT_DATE"
+          START_DATE="$(TZ=Asia/Tokyo date -d '7 days ago' +%F)"
+          node pipeline/backfill_race_odds.mjs "$START_DATE" "$RECENT_DATE"
 
       - name: Backfill trifecta odds
+        if: github.event_name == 'workflow_dispatch'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
