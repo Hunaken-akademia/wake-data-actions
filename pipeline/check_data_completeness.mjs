@@ -146,7 +146,7 @@ function classifyRace({ race, preCount, exCount, snapshotOk, weatherOk, aiOk, od
   if (REQUIRE_AI && !aiOk) missing.push("ai");
   if (oddsCount < oddsRequiredCount) missing.push("odds");
   if (resultCount < 6) missing.push("results");
-  if (!payoutOk) missing.push("payout");
+  if (!payoutOk && !race?.trifectaUnformed) missing.push("payout");
   if (!missing.length) return { status: "complete", missing };
 
   // 公式が「順延・中止・打切」と示すレースで結果自体が存在しない場合は、
@@ -210,6 +210,31 @@ async function fetchOfficialCancellationKeys(expectedMap, resultMap) {
     cancelled: new Set(rows.flatMap((row) => row.cancelled)),
     errors: rows.filter((row) => row.error).map((row) => ({ placeNo: row.placeNo, error: row.error })),
   };
+}
+
+async function fetchOfficialUnformedTrifectas(expectedMap, resultMap, payoutMap) {
+  const targets = [...expectedMap.values()].filter(row => {
+    const key = raceKey(row.place_no, row.race_no);
+    return (resultMap.get(key)?.size || 0) === 6 && !payoutMap.get(key);
+  });
+  const checks = await mapLimit(targets, 4, async row => {
+    const key = raceKey(row.place_no, row.race_no);
+    const url = "https://www.boatrace.jp/owpc/pc/race/raceresult?hd=" + TARGET_DATE.replaceAll("-", "") + "&jcd=" + String(row.place_no).padStart(2,"0") + "&rno=" + row.race_no;
+    try {
+      const res = await fetch(url, {signal:AbortSignal.timeout(15000), headers:{"user-agent":"WAKE-DataHealth/1.0"}});
+      if (!res.ok) return null;
+      const html = await res.text();
+      const blocks = html.match(/<tbody\b[^>]*>[\s\S]*?<\/tbody>/gi) || [];
+      return blocks.some(block => {
+        const text = block.replace(/<[^>]*>/g," ").replace(/\s+/g," ");
+        return /3連単\s+不成立(?:\s|$)/.test(text);
+      }) ? key : null;
+    } catch (e) {
+      console.error("[wake-health] official trifecta check " + key + ": " + (e?.message || e));
+      return null;
+    }
+  });
+  return new Set(checks.filter(Boolean));
 }
 
 async function scan({ afterRepair = false } = {}) {
@@ -298,6 +323,7 @@ async function scan({ afterRepair = false } = {}) {
     payoutMap.set(key, payoutMap.get(key) === true || ok);
   }
 
+  const unformedTrifectas = await fetchOfficialUnformedTrifectas(expectedMap, resultMap, payoutMap);
   const now = jstNow();
   const items = [...expectedMap.values()]
     .sort((a, b) => Number(a.place_no) - Number(b.place_no) || Number(a.race_no) - Number(b.race_no))
@@ -309,6 +335,7 @@ async function scan({ afterRepair = false } = {}) {
         ...(dbRace || {}),
         dbRace: !!dbRace,
         officialCancelled: officialCancellations.cancelled.has(key),
+        trifectaUnformed: unformedTrifectas.has(key),
         post_time: dbRace?.post_time || scheduled?.post_time || null,
       };
       const preCount = preMap.get(key)?.size || 0;
@@ -357,6 +384,7 @@ async function scan({ afterRepair = false } = {}) {
           resultCount,
           activeResultCount,
           payoutOk,
+          trifectaUnformed: race.trifectaUnformed === true,
           reason: classified.reason || null,
           scheduleSource: race.scheduleSource || null,
         },

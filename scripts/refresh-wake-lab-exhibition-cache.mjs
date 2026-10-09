@@ -5,7 +5,7 @@ if (!base || !key) {
   throw new Error('SUPABASE_URL / SUPABASE_SERVICE_KEY is required');
 }
 
-const periods = [180, 365, 730];
+const periods = [0, 180, 365, 730];
 const summary = [];
 
 for (const days of periods) {
