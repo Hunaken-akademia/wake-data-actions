@@ -17,3 +17,9 @@ To pause, set `wake_history_archive_control.enabled = false` for job `five_year_
 The current phase and cumulative progress are in `wake_history_archive_control.last_summary`. Coverage is measured from day/race counters, not from the earliest archived date. Archive verification and live-table promotion are separate steps.
 
 Validation: `python3 -m unittest discover -s tests -p 'test_history_archive.py' -v`.
+
+## Parallel collector v2
+
+Base archives use eight day workers. Original measurements and exhibition ST use 24 rolling race workers at the same time as base collection; they do not wait for all five years of base data. Recent dates are filled first so useful original measurements are available early.
+
+Workers share independent per-host pacing with a ceiling of eight request starts per second per source. HTTP 429/503 reduces the shared rate and honors Retry-After. HTTPS connections are reused per worker, including the configured network proxy and database connections. Date/race identities prevent duplicate work after out-of-order completion. Only transient failed feeds are retried; successful and unavailable feeds are preserved. Complete original measurements already in WAKE are reused, while the separate exhibition ST source is still checked.

@@ -38,7 +38,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           RUN_SECONDS: ${{ github.event_name == 'push' && '90' || '1500' }}
-        run: python3 -u pipeline/collect_history_archive.py --phase auto --seconds "$RUN_SECONDS" --max-days 250
+        run: python3 -u pipeline/collect_history_archive.py --phase both --seconds "$RUN_SECONDS" --max-days 1826
       - name: Continue the finite backfill from its checkpoint
         if: steps.collect.outputs.more == 'true'
         env:

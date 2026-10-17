@@ -2,12 +2,13 @@
 """Finite, resumable official-source archive; never modifies WAKE live tables.
 
 Uses only Python/Node standard libraries and the OS libarchive reader.
-Source requests are limited to two concurrent requests and two starts/second.
+Independent base/original workers share adaptive per-host request pacing.
 Secrets are used only for the database transport and never written to logs.
 """
 import argparse
 import base64
 import concurrent.futures
+import contextlib
 import ctypes
 import ctypes.util
 import datetime as dt
@@ -25,14 +26,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import unicodedata
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from archive_transport import Transport, HostPacing
 
 ROOT = Path(__file__).resolve().parent
 JOB = 'five_year_20261017'
 TABLE = 'wake_history_archive_days'
 CONTROL = 'wake_history_archive_control'
 MAX_SOURCE_BYTES = 4 * 1024 * 1024
-REQUEST_LOCK = threading.Lock()
-LAST_REQUEST = 0.0
+HTTP = Transport()
+PACING = HostPacing(8)
+BASE_WORKERS = 8
+ORIGINAL_WORKERS = 24
+TRANSIENT = (429, 500, 502, 503, 504, "network_error")
 
 
 def now():
@@ -49,26 +56,21 @@ def unpack(value):
 
 
 def source_get(url):
-    global LAST_REQUEST
-    # No authentication, alternative hosts, or repeated retries for 401/403/404.
+    host = urllib.parse.urlsplit(url).hostname
     for attempt in range(3):
-        with REQUEST_LOCK:
-            delay = 0.5 - (time.monotonic() - LAST_REQUEST)
-            if delay > 0:
-                time.sleep(delay)
-            LAST_REQUEST = time.monotonic()
+        PACING.acquire(host)
         try:
-            request = urllib.request.Request(url, headers={'User-Agent': 'WAKE-History-Archive/1.0'})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                data = response.read(MAX_SOURCE_BYTES + 1)
-                if len(data) > MAX_SOURCE_BYTES:
-                    return {'status': 'oversize', 'url': url}
-                return {'status': response.status, 'url': url, 'data': data}
-        except urllib.error.HTTPError as error:
-            status = error.code
+            status, headers, data = HTTP.request(url, maximum=MAX_SOURCE_BYTES,
+                                                headers={'User-Agent': 'WAKE-History-Archive/2.0'})
+            PACING.observe(host, status, headers)
+            if len(data) > MAX_SOURCE_BYTES:
+                return {'status': 'oversize', 'url': url}
+            if status == 200:
+                return {'status': status, 'url': url, 'data': data}
         except (OSError, TimeoutError):
             status = 'network_error'
-        if status not in (429, 500, 502, 503, 504, 'network_error') or attempt == 2:
+        # Denied/missing responses are recorded without retries or bypasses.
+        if status not in TRANSIENT or attempt == 2:
             return {'status': status, 'url': url}
         time.sleep(2 ** attempt)
 
@@ -223,14 +225,12 @@ class Database:
         data = None if payload is None else json.dumps(payload, separators=(',', ':')).encode()
         for attempt in range(3):
             try:
-                request = urllib.request.Request(self.url + path, data=data, headers=headers, method=method)
-                with urllib.request.urlopen(request, timeout=45) as response:
-                    body = response.read()
-                return json.loads(body) if body else None
-            except urllib.error.HTTPError as error:
-                # Response bodies and authenticated request objects must not reach public logs.
-                if error.code < 500 or attempt == 2:
-                    raise RuntimeError(f'database HTTP {error.code}') from None
+                status, _, body = HTTP.request(self.url + path, method=method, data=data, headers=headers)
+                if status >= 400:
+                    if status < 500 or attempt == 2:
+                        raise RuntimeError(f'database HTTP {status}')
+                else:
+                    return json.loads(body) if body else None
             except (OSError, TimeoutError):
                 if attempt == 2:
                     raise RuntimeError('database network error') from None
@@ -263,66 +263,93 @@ def archive_index(db, job):
     return db.all(f'{TABLE}?race_date=gte.{job["start_date"]}&race_date=lte.{job["end_date"]}&select={fields}&order=race_date.asc')
 
 
+def collect_base_day(db, row):
+    date = row['race_date']
+    db.patch(date, {'base_attempts': row['base_attempts'] + 1})
+    try:
+        payload = fetch_base(date)
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        db.patch(date, {'base_status': 'error', 'last_error': str(error)[:160]})
+        print(json.dumps({'date': date, 'base': 'error', 'reason': str(error)[:160]}), flush=True)
+        return False
+    parsed = payload['parsed']
+    races = {(r['place_no'], r['race_no']) for r in parsed['rows']}
+    values = {'base_status': 'complete', 'base_payload_gzip_base64': pack(payload),
+              'race_count': len(races), 'result_rows': len(parsed['rows']),
+              'exhibition_rows': len(parsed['exhibitions']),
+              'actual_st_rows': sum(r.get('st') is not None for r in parsed['rows']),
+              'parse_missing_rows': parsed['audit']['unparsed_rows'],
+              'b_available': 'text' in payload['sources']['B'], 'last_error': None}
+    db.patch(date, values)
+    print(json.dumps({'date': date, 'base': 'complete', 'races': len(races),
+                      'rows': len(parsed['rows']), 'exhibition': len(parsed['exhibitions']),
+                      'actual_st': values['actual_st_rows'],
+                      'unparsed': parsed['audit']['unparsed_rows']}), flush=True)
+    return True
+
+
 def collect_base(db, index, deadline, max_days):
-    finished = 0
-    consecutive_errors = 0
-    for row in index:
-        if row['base_status'] == 'complete' or row['base_attempts'] >= 3:
-            continue
-        if time.monotonic() >= deadline or finished >= max_days or not db.control()['enabled']:
-            break
-        date = row['race_date']
-        attempt = row['base_attempts'] + 1
-        db.patch(date, {'base_attempts': attempt})
-        try:
-            payload = fetch_base(date)
-        except (ValueError, OSError, subprocess.SubprocessError) as error:
-            db.patch(date, {'base_status': 'error', 'last_error': str(error)[:160]})
-            print(json.dumps({'date': date, 'base': 'error', 'reason': str(error)[:160]}), flush=True)
-            consecutive_errors += 1
-            if consecutive_errors >= 5:
-                raise RuntimeError('five consecutive source failures; stopped for inspection')
-            continue
-        parsed = payload['parsed']
-        races = {(r['place_no'], r['race_no']) for r in parsed['rows']}
-        values = {'base_status': 'complete', 'base_payload_gzip_base64': pack(payload),
-                  'race_count': len(races), 'result_rows': len(parsed['rows']),
-                  'exhibition_rows': len(parsed['exhibitions']),
-                  'actual_st_rows': sum(r.get('st') is not None for r in parsed['rows']),
-                  'parse_missing_rows': parsed['audit']['unparsed_rows'],
-                  'b_available': 'text' in payload['sources']['B'], 'last_error': None}
-        db.patch(date, values)
-        print(json.dumps({'date': date, 'base': 'complete', 'races': len(races),
-                          'rows': len(parsed['rows']), 'exhibition': len(parsed['exhibitions']),
-                          'actual_st': values['actual_st_rows'],
-                          'unparsed': parsed['audit']['unparsed_rows']}), flush=True)
-        finished += 1
-        consecutive_errors = 0
+    candidates = iter(sorted((r for r in index if r['base_status'] != 'complete' and r['base_attempts'] < 3),
+                             key=lambda r: r['race_date'], reverse=True))
+    finished, submitted, errors = 0, 0, 0
+    active = True
+    checked = 0.0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=BASE_WORKERS) as pool:
+        running = set()
+        exhausted = False
+        while running or not exhausted:
+            if time.monotonic() - checked >= 10:
+                active = db.control()['enabled']
+                checked = time.monotonic()
+            while not exhausted and active and time.monotonic() < deadline and submitted < max_days and len(running) < BASE_WORKERS:
+                row = next(candidates, None)
+                if row is None:
+                    exhausted = True
+                    break
+                running.add(pool.submit(collect_base_day, db, row))
+                submitted += 1
+            if not running:
+                break
+            done, running = concurrent.futures.wait(running, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                if future.result():
+                    finished += 1
+                    errors = 0
+                else:
+                    errors += 1
+                    if errors >= 8:
+                        raise RuntimeError('eight consecutive source failures; stopped for inspection')
     return finished
 
 
-def fetch_original(date, key, racers):
+def record_needs_retry(record):
+    return record.get('status') in TRANSIENT or record.get('start_exhibition', {}).get('status') in TRANSIENT
+
+
+def fetch_original(date, key, racers, previous=None):
     place, race = key
     d, j, r = date.replace('-', ''), f'{place:02d}', f'{race:02d}'
-    result = source_get(f'https://race.boatcast.jp/txt/{j}/bc_oriten_{d}_{j}_{r}.txt')
-    record = {k: v for k, v in result.items() if k != 'data'}
-    record.update(place_no=place, race_no=race, fetched_at=now())
-    # Exhibition ST may exist even where original lap/turn data does not.
-    st = source_get(f'https://race.boatcast.jp/hp_txt/{j}/bc_j_stt_{d}_{j}_{r}.txt')
-    record['start_exhibition'] = {k: v for k, v in st.items() if k != 'data'}
-    if st['status'] == 200:
-        try:
-            record['start_exhibition']['text'] = st['data'].decode('utf-8-sig')
-        except UnicodeError:
-            record['start_exhibition']['status'] = 'parse_error'
-            record['start_exhibition']['raw_base64'] = base64.b64encode(st['data']).decode()
-    if result['status'] == 200:
-        try:
-            text = result['data'].decode('utf-8-sig')
-            rows, warnings = parse_original(text, racers)
-            record.update(text=text, rows=rows, warnings=warnings)
-        except (ValueError, UnicodeError):
-            record.update(status='parse_error', raw_base64=base64.b64encode(result['data']).decode())
+    record = dict(previous or {})
+    if not record or record.get('status') in TRANSIENT:
+        result = source_get(f'https://race.boatcast.jp/txt/{j}/bc_oriten_{d}_{j}_{r}.txt')
+        record.update({k: v for k, v in result.items() if k != 'data'})
+        record.update(place_no=place, race_no=race, fetched_at=now())
+        if result['status'] == 200:
+            try:
+                text = result['data'].decode('utf-8-sig')
+                rows, warnings = parse_original(text, racers)
+                record.update(text=text, rows=rows, warnings=warnings)
+            except (ValueError, UnicodeError):
+                record.update(status='parse_error', raw_base64=base64.b64encode(result['data']).decode())
+    old_st = record.get('start_exhibition', {})
+    if not old_st or old_st.get('status') in TRANSIENT:
+        st = source_get(f'https://race.boatcast.jp/hp_txt/{j}/bc_j_stt_{d}_{j}_{r}.txt')
+        record['start_exhibition'] = {k: v for k, v in st.items() if k != 'data'}
+        if st['status'] == 200:
+            try:
+                record['start_exhibition']['text'] = st['data'].decode('utf-8-sig')
+            except UnicodeError:
+                record['start_exhibition'].update(status='parse_error', raw_base64=base64.b64encode(st['data']).decode())
     return record
 
 
@@ -330,92 +357,117 @@ def original_counts(records):
     return {'original_races': sum(bool(r.get('rows')) for r in records),
             'original_boat_rows': sum(len(r.get('rows', [])) for r in records),
             'original_unavailable_races': sum(r['status'] in (401, 403, 404) for r in records),
-            'original_failed_races': sum(r['status'] not in (200, 'database', 401, 403, 404) for r in records),
+            'original_failed_races': sum(r['status'] not in (200, 'database', 401, 403, 404) or record_needs_retry(r) for r in records),
             'start_exhibition_races': sum(r.get('start_exhibition', {}).get('status') == 200 for r in records)}
 
 
-def collect_original(db, index, deadline, max_days):
+def checkpoint_original(db, date, original, records, total, attempts):
+    original['records'] = [records[key] for key in sorted(records)]
+    original['format_version'] = 2  # completed race identities, not a contiguous prefix
+    values = list(records.values())
+    counts = original_counts(values)
+    status = 'running'
+    if len(records) == total and all('start_exhibition' in r for r in values):
+        status = 'error' if any(record_needs_retry(r) for r in values) and attempts < 3 else (
+            'partial' if counts['original_unavailable_races'] or counts['original_failed_races'] or any(len(r.get('rows', [])) < 6 for r in values) else 'complete')
+    db.patch(date, {'original_status': status, 'original_cursor': len(records),
+                    'original_attempts': attempts, 'original_payload_gzip_base64': pack(original), **counts})
+    return status
+
+
+def collect_original_day(db, date, deadline, pool=None):
+    row = db.request(f'{TABLE}?race_date=eq.{date}')[0]
+    base = unpack(row['base_payload_gzip_base64'])
+    grouped = {}
+    for racer in base['parsed']['rows']:
+        grouped.setdefault((racer['place_no'], racer['race_no']), []).append(racer)
+    original = unpack(row['original_payload_gzip_base64']) if row['original_payload_gzip_base64'] else {'date': date, 'format_version': 2, 'records': []}
+    records = {(r['place_no'], r['race_no']): r for r in original['records']}
+    if len(records) != len(original['records']) or len(records) != row['original_cursor'] or not set(records) <= set(grouped):
+        raise RuntimeError('original checkpoint does not match race identities')
+    retry_pass = row['original_status'] == 'error'
+    attempts = row['original_attempts'] + int(retry_pass)
+    saved = db.all(f'exhibition?race_date=eq.{date}&select=place_no,race_no,boat,regno,ex_time,lap,turn,straight,source&order=place_no.asc,race_no.asc,boat.asc')
+    saved_by_race = {}
+    for item in saved:
+        saved_by_race.setdefault((item['place_no'], item['race_no']), []).append(item)
+    for key, existing in saved_by_race.items():
+        if key not in grouped or key in records:
+            continue
+        expected = {r['boat']: r['regno'] for r in grouped[key]}
+        usable = len(existing) == 6 and len({r['boat'] for r in existing}) == 6 and all(
+            r['regno'] == expected.get(r['boat']) and all(r.get(c) and float(r[c]) > 0 for c in ('lap','turn','straight')) for r in existing)
+        if usable:
+            # Reuse original measurements but still collect the separate exhibition ST feed.
+            records[key] = {'place_no': key[0], 'race_no': key[1], 'status': 'database', 'rows': existing,
+                            'source': 'WAKE_existing_exhibition', 'fetched_at': now()}
+    # Recompute after adding reusable measurements. Missing ST still needs a request.
+    pending = iter(key for key in sorted(grouped) if key not in records or record_needs_retry(records[key]) or 'start_exhibition' not in records[key])
+    changed = 0
+    last_save = checked = time.monotonic()
+    active, exhausted = True, False
+    with (contextlib.nullcontext(pool) if pool is not None else concurrent.futures.ThreadPoolExecutor(max_workers=ORIGINAL_WORKERS)) as pool:
+        running = {}
+        while running or not exhausted:
+            if time.monotonic() - checked >= 10:
+                active = db.control()['enabled']
+                checked = time.monotonic()
+            while not exhausted and active and time.monotonic() < deadline and len(running) < ORIGINAL_WORKERS:
+                key = next(pending, None)
+                if key is None:
+                    exhausted = True
+                    break
+                running[pool.submit(fetch_original, date, key, grouped[key], records.get(key))] = key
+            if not running:
+                break
+            done, _ = concurrent.futures.wait(running, timeout=1, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                key = running.pop(future)
+                records[key] = future.result()
+                changed += 1
+            if changed >= 24 or changed and time.monotonic() - last_save >= 15:
+                checkpoint_original(db, date, original, records, len(grouped), attempts)
+                changed, last_save = 0, time.monotonic()
+    status = checkpoint_original(db, date, original, records, len(grouped), attempts)
+    print(json.dumps({'date': date, 'original_checked': len(records), 'total_races': len(grouped),
+                      'status': status, **original_counts(list(records.values()))}), flush=True)
+    return status in ('complete', 'partial', 'error')
+
+
+def collect_original(db, index, deadline, max_days, pool=None):
     finished = 0
-    # Prefer recent years first: maximize useful original measurements early.
-    for brief in reversed(index):
-        if brief['base_status'] != 'complete' or brief['original_status'] in ('complete', 'partial'):
-            continue
-        if brief['original_attempts'] >= 3:
-            continue
-        if time.monotonic() >= deadline or finished >= max_days or not db.control()['enabled']:
-            break
-        date = brief['race_date']
-        row = db.request(f'{TABLE}?race_date=eq.{date}')[0]
-        base = unpack(row['base_payload_gzip_base64'])
-        grouped = {}
-        for racer in base['parsed']['rows']:
-            grouped.setdefault((racer['place_no'], racer['race_no']), []).append(racer)
-        keys = sorted(grouped)
-        original = unpack(row['original_payload_gzip_base64']) if row['original_payload_gzip_base64'] else {'date': date, 'format_version': 1, 'records': []}
-        records = original['records']
-        cursor = row['original_cursor']
-        if len(records) != cursor or cursor > len(keys):
-            raise RuntimeError('original checkpoint does not match race manifest')
-        # Retry only transient transport failures. Keep all successful and denied
-        # source observations; do not repeat 401/403/404 requests.
-        if row['original_status'] == 'error' and cursor == len(keys):
-            attempts = row['original_attempts'] + 1
-            for n, record in enumerate(records):
-                if time.monotonic() >= deadline:
-                    break
-                if record['status'] in (429, 500, 502, 503, 504, 'network_error'):
-                    key = (record['place_no'], record['race_no'])
-                    records[n] = fetch_original(date, key, grouped[key])
-            counts = original_counts(records)
-            retryable = any(r['status'] in (429, 500, 502, 503, 504, 'network_error') for r in records)
-            db.patch(date, {'original_attempts': attempts, 'original_status': 'error' if retryable and attempts < 3 else 'partial',
-                            'original_payload_gzip_base64': pack(original), **counts})
-            finished += 1
-            continue
-        # Reuse complete measurements already collected by WAKE.
-        saved = db.all(f'exhibition?race_date=eq.{date}&select=place_no,race_no,boat,regno,ex_time,lap,turn,straight,source&order=place_no.asc,race_no.asc,boat.asc')
-        saved_by_race = {}
-        for item in saved:
-            saved_by_race.setdefault((item['place_no'], item['race_no']), []).append(item)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            while cursor < len(keys) and time.monotonic() < deadline:
-                if not db.control()['enabled']:
-                    break
-                segment = keys[cursor:cursor + 12]
-                tasks = []
-                for key in segment:
-                    existing = saved_by_race.get(key, [])
-                    expected = {r['boat']: r['regno'] for r in grouped[key]}
-                    usable = len(existing) == 6 and len({r['boat'] for r in existing}) == 6 and all(
-                        r['regno'] == expected.get(r['boat']) and all(r.get(c) and float(r[c]) > 0 for c in ('lap','turn','straight'))
-                        for r in existing)
-                    if usable:
-                        tasks.append({'place_no': key[0], 'race_no': key[1], 'status': 'database',
-                                      'rows': existing, 'source': 'WAKE_existing_exhibition', 'fetched_at': now()})
-                    else:
-                        tasks.append(pool.submit(fetch_original, date, key, grouped[key]))
-                for task in tasks:
-                    records.append(task.result() if hasattr(task, 'result') else task)
-                cursor += len(segment)
-                counts = original_counts(records)
-                status = 'running'
-                if cursor == len(keys):
-                    retryable = any(r['status'] in (429, 500, 502, 503, 504, 'network_error') for r in records)
-                    status = 'error' if retryable else ('partial' if counts['original_unavailable_races'] or counts['original_failed_races'] or any(len(r.get('rows', [])) < 6 for r in records) else 'complete')
-                db.patch(date, {'original_status': status, 'original_cursor': cursor,
-                                'original_payload_gzip_base64': pack(original), **counts})
-        print(json.dumps({'date': date, 'original_checked': cursor, 'total_races': len(keys),
-                          **original_counts(records)}), flush=True)
-        if cursor == len(keys):
-            finished += 1
-        else:
-            break
+    with (contextlib.nullcontext(pool) if pool is not None else concurrent.futures.ThreadPoolExecutor(max_workers=ORIGINAL_WORKERS)) as executor:
+        for brief in reversed(index):
+            if brief['base_status'] != 'complete' or brief['original_status'] in ('complete','partial') or brief['original_attempts'] >= 3:
+                continue
+            if time.monotonic() >= deadline or finished >= max_days or not db.control()['enabled']:
+                break
+            if collect_original_day(db, brief['race_date'], deadline, pool=executor):
+                finished += 1
+            else:
+                break
+    return finished
+
+
+def original_follow_base(db, job, deadline, max_days):
+    finished = 0
+    # Keep these workers alive across dates to reuse their HTTPS connections.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=ORIGINAL_WORKERS) as pool:
+        while time.monotonic() < deadline and finished < max_days and db.control()['enabled']:
+            index = archive_index(db, job)
+            eligible = [r for r in index if r['base_status'] == 'complete' and r['original_status'] not in ('complete','partial') and r['original_attempts'] < 3]
+            if eligible:
+                finished += collect_original(db, index, deadline, max_days - finished, pool=pool)
+            elif any(r['base_status'] != 'complete' and r['base_attempts'] < 3 for r in index):
+                time.sleep(2)
+            else:
+                break
     return finished
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--phase', choices=('auto', 'base', 'original'), default='auto')
+    parser.add_argument('--phase', choices=('auto', 'base', 'original', 'both'), default='auto')
     parser.add_argument('--seconds', type=int, default=1500)
     parser.add_argument('--max-days', type=int, default=250)
     parser.add_argument('--probe-date')
@@ -444,7 +496,13 @@ def main():
     run_url = 'https://github.com/' + os.environ.get('GITHUB_REPOSITORY', '') + '/actions/runs/' + os.environ.get('GITHUB_RUN_ID', '')
     db.update_control(state='active', phase=phase, run_url=run_url)
     deadline = time.monotonic() + max(30, min(args.seconds, 18000))
-    count = (collect_base if phase == 'base' else collect_original)(db, index, deadline, args.max_days)
+    if phase == 'both':
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as coordinators:
+            base_future = coordinators.submit(collect_base, db, index, deadline, args.max_days)
+            original_future = coordinators.submit(original_follow_base, db, job, deadline, args.max_days)
+            count = {'base': base_future.result(), 'original': original_future.result()}
+    else:
+        count = (collect_base if phase == 'base' else collect_original)(db, index, deadline, args.max_days)
     index = archive_index(db, job)
     pending_base = sum(r['base_status'] != 'complete' and r['base_attempts'] < 3 for r in index)
     pending_original = sum(r['base_status'] == 'complete' and r['original_status'] not in ('complete','partial') and r['original_attempts'] < 3 for r in index)

@@ -3,6 +3,9 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import urllib.error
+import concurrent.futures
+import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('history', ROOT / 'pipeline/collect_history_archive.py')
@@ -26,6 +29,86 @@ ENDK
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_parallel_base_days_are_unique_and_bounded(self):
+        class DB:
+            def control(self):
+                return {'enabled': True}
+        active, peak = 0, 0
+        calls = []
+        lock = threading.Lock()
+        def fetch(db, row):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                calls.append(row['race_date'])
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return True
+        index = [{'race_date': f'2021-10-{d:02d}', 'base_status': 'pending', 'base_attempts': 0} for d in range(17,29)]
+        with patch.object(h, 'collect_base_day', side_effect=fetch):
+            count = h.collect_base(DB(), index, time.monotonic() + 5, 10)
+        self.assertEqual(count, 10)
+        self.assertEqual(len(set(calls)), 10)
+        self.assertGreater(peak, 1)
+        self.assertLessEqual(peak, h.BASE_WORKERS)
+
+    def test_original_resume_uses_race_identity_after_out_of_order_completion(self):
+        parsed = h.parse_k(K, '2021-10-17')
+        parsed['rows'] = [{**r, 'race_no': race} for race in range(1,4) for r in parsed['rows']]
+        done = {'place_no': 22, 'race_no': 3, 'status': 200, 'rows': [{'boat': x} for x in range(1,7)],
+                'start_exhibition': {'status': 200, 'text': 'known'}}
+        row = {'base_payload_gzip_base64': h.pack({'parsed': parsed}),
+               'original_payload_gzip_base64': h.pack({'date': '2021-10-17', 'records': [done]}),
+               'original_cursor': 1, 'original_status': 'running', 'original_attempts': 0}
+        class DB:
+            def request(self, path): return [row]
+            def all(self, path): return []
+            def control(self): return {'enabled': True}
+            def patch(self, date, values): row.update(values)
+        calls = []
+        def fetch(date, key, racers, previous=None):
+            calls.append(key)
+            time.sleep(0.03 if key[1] == 1 else 0.001)
+            return {'place_no': key[0], 'race_no': key[1], 'status': 403,
+                    'start_exhibition': {'status': 403}}
+        with patch.object(h, 'fetch_original', side_effect=fetch):
+            self.assertTrue(h.collect_original_day(DB(), '2021-10-17', time.monotonic() + 5))
+            self.assertTrue(h.collect_original_day(DB(), '2021-10-17', time.monotonic() + 5))
+        self.assertEqual(set(calls), {(22,1),(22,2)})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(row['original_cursor'], 3)
+        records = h.unpack(row['original_payload_gzip_base64'])['records']
+        self.assertEqual(len(records), 3)
+        self.assertEqual(next(r for r in records if r['race_no'] == 3), done)
+
+    def test_retry_only_fetches_failed_feed(self):
+        previous = {'place_no': 22, 'race_no': 1, 'status': 403,
+                    'start_exhibition': {'status': 'network_error'}}
+        with patch.object(h, 'source_get', return_value={'status':200, 'url':'source', 'data':b'exhibition ST'}) as get:
+            record = h.fetch_original('2021-10-17', (22,1), [], previous)
+        self.assertEqual(get.call_count, 1)
+        self.assertIn('bc_j_stt_', get.call_args.args[0])
+        self.assertEqual(record['status'], 403)
+        self.assertEqual(record['start_exhibition']['status'], 200)
+
+    def test_retry_after_reduces_shared_host_rate(self):
+        pacing = h.HostPacing(8)
+        pacing.observe('source', 429, {'Retry-After': '3'})
+        state = pacing.hosts['source']
+        self.assertGreaterEqual(state['blocked_until'], time.monotonic() + 2.9)
+        self.assertGreater(state['interval'], 1/8)
+        self.assertNotIn('other-source', pacing.hosts)
+
+    def test_reused_measurements_are_not_complete_before_exhibition_st_checked(self):
+        class DB:
+            def patch(self, date, values): self.values = values
+        db = DB()
+        records = {(22,1): {'place_no':22,'race_no':1,'status':'database','rows':[{}]*6}}
+        status = h.checkpoint_original(db, '2021-10-17', {}, records, 1, 0)
+        self.assertEqual(status, 'running')
+
     def test_official_k_exhibition_is_separate_from_result_st_and_course(self):
         data = h.parse_k(K, '2021-10-17')
         self.assertEqual(data['audit'], {'expected_rows': 6, 'parsed_rows': 6, 'unparsed_rows': 0})
@@ -71,7 +154,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(rows[0]['half_lap'], 18.22)
 
     def test_forbidden_source_is_recorded_without_retries(self):
-        with patch.object(h.urllib.request, 'urlopen', side_effect=urllib.error.HTTPError('https://example.invalid', 403, 'Forbidden', {}, None)) as request:
+        with patch.object(h.HTTP, 'request', return_value=(403, {}, b'')) as request:
             result = h.source_get('https://example.invalid')
         self.assertEqual(result['status'], 403)
         self.assertEqual(request.call_count, 1)
