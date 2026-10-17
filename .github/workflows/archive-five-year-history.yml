@@ -1,0 +1,46 @@
+name: Archive five years of WAKE history
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/archive-five-year-history.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: wake-five-year-history-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    if: github.repository == 'Hunaken-akademia/wake-data-actions'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Require a public repository and standard runner
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+        run: test "$REPO_PRIVATE" = "false"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Verify system archive reader
+        run: python3 -c "import ctypes.util; assert ctypes.util.find_library('archive'), 'libarchive is required'"
+      - name: Verify archive invariants
+        run: python3 -m unittest discover -s tests -p 'test_history_archive.py' -v
+      - name: Collect and checkpoint official sources
+        id: collect
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RUN_SECONDS: ${{ github.event_name == 'push' && '90' || '1500' }}
+        run: python3 -u pipeline/collect_history_archive.py --phase auto --seconds "$RUN_SECONDS" --max-days 250
+      - name: Continue the finite backfill from its checkpoint
+        if: steps.collect.outputs.more == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/archive-five-year-history.yml/dispatches" -f ref=main
