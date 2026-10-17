@@ -178,16 +178,16 @@ def parse_original(text, racers):
     warnings = []
     for line in text.splitlines():
         cells = [cell.strip() for cell in line.split('\t')]
-        if len(cells) < 4:
+        if len(cells) < 3:
             continue
         racer = None
-        if cells[0] in {str(x) for x in range(1, 7)} and len(cells) >= 5:
+        if cells[0] in {str(x) for x in range(1, 7)} and len(cells) >= 4:
             candidate = by_boat.get(int(cells[0]))
             if candidate and name_key(cells[1]) == name_key(candidate['racer_name']):
                 racer, metrics = candidate, cells[2:5]
             elif re.search(r'[一-龠ぁ-んァ-ヶ]', cells[1]):
                 warnings.append('boat_name_mismatch')
-        elif cells[0] in by_regno and len(cells) >= 5:
+        elif cells[0] in by_regno and len(cells) >= 4:
             candidate = by_regno[cells[0]]
             if name_key(cells[1]) == name_key(candidate['racer_name']):
                 racer, metrics = candidate, cells[2:5]

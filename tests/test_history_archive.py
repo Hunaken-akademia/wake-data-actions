@@ -141,6 +141,15 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(rows[0]['straight'], 7.22)
         self.assertEqual(warnings, [])
 
+    def test_original_feed_without_straight_column_keeps_lap_and_turn(self):
+        racers = [{'boat': 1, 'regno': 4857, 'racer_name': '加藤翔馬'}]
+        for source in ['1\t加藤翔馬\t37.12\t5.55\n', '4857\t加藤翔馬\t37.12\t5.55\n', '加藤翔馬\t37.12\t5.55\n']:
+            rows, _ = h.parse_original(source, racers)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['lap'], 37.12)
+            self.assertEqual(rows[0]['turn'], 5.55)
+            self.assertIsNone(rows[0]['straight'])
+
     def test_original_wrong_racer_is_not_attached_to_boat(self):
         racers = [{'boat': 1, 'regno': 4857, 'racer_name': '加藤翔馬'}]
         rows, warnings = h.parse_original('1\t別の選手\t37.12\t5.55\t7.22\n', racers)
