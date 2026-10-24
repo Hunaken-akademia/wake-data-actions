@@ -1,0 +1,68 @@
+name: Collect one year of predeadline odds
+on:
+  push:
+    paths: ['.github/workflows/collect-predeadline-year.yml']
+  workflow_dispatch:
+    inputs:
+      iteration:
+        default: '1'
+        type: string
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: predeadline-year-20251024-20261023
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ARCHIVE_NAME: wake-predeadline-year-20251024-20261023
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install aiohttp==3.14.4
+      - name: Restore last checkpoint
+        shell: bash
+        run: |
+          mkdir -p state out
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" > /tmp/artifacts.json
+          RUN_ID=$(python -c 'import json,os; a=[x for x in json.load(open("/tmp/artifacts.json"))["artifacts"] if x["name"]==os.environ["ARCHIVE_NAME"] and not x["expired"]]; print(max(a,key=lambda x:x["id"])["workflow_run"]["id"] if a else "")')
+          if [ -n "$RUN_ID" ]; then
+            gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$ARCHIVE_NAME" --dir state
+          fi
+      - name: Collect with seven second minimum interval
+        run: python research/predeadline-year/collect.py --targets research/predeadline-year/targets.json.gz.b64 --budget-seconds 17400 --interval 7
+      - name: Save checkpoint
+        if: always()
+        run: python research/predeadline-year/collect.py --targets research/predeadline-year/targets.json.gz.b64 --pack-only
+      - name: Upload checkpoint
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wake-predeadline-year-20251024-20261023
+          path: out/
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+      - name: Report, retain two checkpoints and continue bounded collection
+        if: success()
+        env:
+          ITERATION: ${{ inputs.iteration || '1' }}
+        shell: bash
+        run: |
+          cat out/progress.json >> "$GITHUB_STEP_SUMMARY"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" > /tmp/artifacts.json
+          python -c 'import json,os; a=sorted([x for x in json.load(open("/tmp/artifacts.json"))["artifacts"] if x["name"]==os.environ["ARCHIVE_NAME"]],key=lambda x:x["id"],reverse=True); print("\n".join(str(x["id"]) for x in a[2:]))' > /tmp/old-artifacts.txt
+          while read -r ARTIFACT_ID; do
+            if [ -n "$ARTIFACT_ID" ]; then gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"; fi
+          done < /tmp/old-artifacts.txt
+          CONTINUE=$(python -c 'import json; p=json.load(open("out/progress.json")); print("yes" if not p["complete"] and not p.get("requires_attention",True) else "no")')
+          if [ "$CONTINUE" = yes ] && [ "$ITERATION" -lt 24 ]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/collect-predeadline-year.yml/dispatches" -f ref=main -f "inputs[iteration]=$((ITERATION + 1))"
+          fi
